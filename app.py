@@ -1,4 +1,6 @@
-cat > ~/bluescan-v2/app.py <<'PY'
+cd ~/bluescan-v2
+
+cat > app.py <<'PY'
 import json
 import streamlit as st
 
@@ -14,7 +16,9 @@ st.set_page_config(
 
 
 st.title("🔵 BlueScan")
-st.caption("Scanner de segurança para laboratório autorizado")
+st.caption(
+    "Scanner de segurança para laboratório autorizado"
+)
 
 
 target = st.text_input(
@@ -33,9 +37,9 @@ scan_button = st.button(
 
 if scan_button:
 
-    # ---------------------------------------------------------
-    # Validação
-    # ---------------------------------------------------------
+    # =========================================================
+    # VALIDAÇÃO
+    # =========================================================
 
     allowed, reason = validate_target(target)
 
@@ -45,9 +49,9 @@ if scan_button:
 
     st.success(reason)
 
-    # ---------------------------------------------------------
-    # Scanner
-    # ---------------------------------------------------------
+    # =========================================================
+    # SCANNER
+    # =========================================================
 
     with st.spinner("Executando análise..."):
 
@@ -59,9 +63,9 @@ if scan_button:
             st.exception(exc)
             st.stop()
 
-    # ---------------------------------------------------------
-    # Correlação
-    # ---------------------------------------------------------
+    # =========================================================
+    # CORRELAÇÃO
+    # =========================================================
 
     try:
 
@@ -70,10 +74,16 @@ if scan_button:
             {},
         )
 
+        if not isinstance(correlation, dict):
+            correlation = {}
+
         summary = correlation.get(
             "summary",
             {},
         )
+
+        if not isinstance(summary, dict):
+            summary = {}
 
         risk = str(
             correlation.get(
@@ -88,9 +98,9 @@ if scan_button:
         st.exception(exc)
         st.stop()
 
-    # ---------------------------------------------------------
-    # Risco
-    # ---------------------------------------------------------
+    # =========================================================
+    # RISCO GERAL
+    # =========================================================
 
     st.subheader("📊 Risco geral")
 
@@ -109,9 +119,9 @@ if scan_button:
     else:
         st.success("🟢 INFORMAÇÕES")
 
-    # ---------------------------------------------------------
-    # Resumo
-    # ---------------------------------------------------------
+    # =========================================================
+    # RESUMO
+    # =========================================================
 
     critical = summary.get("critical", 0)
     high = summary.get("high", 0)
@@ -138,13 +148,16 @@ if scan_button:
 
     st.divider()
 
-    # ---------------------------------------------------------
-    # Módulos
-    # ---------------------------------------------------------
+    # =========================================================
+    # MÓDULOS
+    # =========================================================
 
     col_http, col_tls, col_dns, col_tech = st.columns(4)
 
+    # ---------------------------------------------------------
     # HTTP
+    # ---------------------------------------------------------
+
     with col_http:
 
         st.subheader("🌐 HTTP")
@@ -172,7 +185,10 @@ if scan_button:
                         str(http["error"])
                     )
 
+    # ---------------------------------------------------------
     # TLS
+    # ---------------------------------------------------------
+
     with col_tls:
 
         st.subheader("🔐 TLS")
@@ -206,7 +222,10 @@ if scan_button:
                 "Não aplicável"
             )
 
+    # ---------------------------------------------------------
     # DNS
+    # ---------------------------------------------------------
+
     with col_dns:
 
         st.subheader("📡 DNS")
@@ -215,10 +234,14 @@ if scan_button:
 
         if isinstance(dns, dict) and not dns.get("error"):
             st.success("Analisado")
+
         else:
             st.error("Falha")
 
-    # Tecnologia
+    # ---------------------------------------------------------
+    # TECNOLOGIA
+    # ---------------------------------------------------------
+
     with col_tech:
 
         st.subheader("🧩 Tecnologia")
@@ -245,11 +268,123 @@ if scan_button:
 
     st.divider()
 
-    # ---------------------------------------------------------
-    # Tecnologias
-    # ---------------------------------------------------------
+    # =========================================================
+    # WHATWEB
+    # =========================================================
 
-    st.subheader("🔎 Tecnologias detectadas")
+    st.subheader("🔎 Fingerprinting — WhatWeb")
+
+    whatweb = result.get(
+        "whatweb",
+        {},
+    )
+
+    if not isinstance(
+        whatweb,
+        dict,
+    ):
+        whatweb = {}
+
+    whatweb_status = whatweb.get(
+        "status",
+        "error",
+    )
+
+    if whatweb_status == "ok":
+
+        plugin_count = whatweb.get(
+            "plugin_count",
+            0,
+        )
+
+        st.success(
+            f"WhatWeb executado — {plugin_count} "
+            f"detecção(ões)"
+        )
+
+        plugins = whatweb.get(
+            "plugins",
+            [],
+        )
+
+        if plugins:
+
+            rows = []
+
+            for plugin in plugins:
+
+                if not isinstance(
+                    plugin,
+                    dict,
+                ):
+                    continue
+
+                name = plugin.get(
+                    "name",
+                    "N/D",
+                )
+
+                details = plugin.get(
+                    "details",
+                    [],
+                )
+
+                if isinstance(
+                    details,
+                    list,
+                ):
+                    details_text = ", ".join(
+                        str(x)
+                        for x in details
+                    )
+                else:
+                    details_text = str(details)
+
+                rows.append(
+                    {
+                        "Tecnologia / Plugin": name,
+                        "Detalhes": details_text or "—",
+                    }
+                )
+
+            if rows:
+                st.dataframe(
+                    rows,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        warning = whatweb.get(
+            "warning"
+        )
+
+        if warning:
+            st.warning(
+                str(warning)
+            )
+
+    else:
+
+        st.warning(
+            "WhatWeb não conseguiu concluir a análise."
+        )
+
+        error = whatweb.get(
+            "error"
+        )
+
+        if error:
+            st.caption(
+                str(error)
+            )
+
+    st.divider()
+
+    # =========================================================
+    # TECNOLOGIAS DETECTADAS PELO BLUESCAN
+    # =========================================================
+
+    st.subheader("🧩 Tecnologias detectadas pelo BlueScan")
 
     technologies = technology_result.get(
         "technologies",
@@ -260,34 +395,32 @@ if scan_button:
 
         for technology in technologies:
 
-            if isinstance(
+            if not isinstance(
                 technology,
                 dict,
             ):
+                continue
 
-                name = technology.get(
-                    "name",
-                    "Tecnologia",
+            name = technology.get(
+                "name",
+                "Tecnologia",
+            )
+
+            evidence = technology.get(
+                "evidence",
+                "",
+            )
+
+            if evidence:
+
+                st.write(
+                    f"**{name}** — {evidence}"
                 )
-
-                evidence = technology.get(
-                    "evidence",
-                    "",
-                )
-
-                if evidence:
-                    st.write(
-                        f"**{name}** — {evidence}"
-                    )
-                else:
-                    st.write(
-                        f"**{name}**"
-                    )
 
             else:
 
                 st.write(
-                    f"**{technology}**"
+                    f"**{name}**"
                 )
 
     else:
@@ -298,9 +431,9 @@ if scan_button:
 
     st.divider()
 
-    # ---------------------------------------------------------
-    # Achados
-    # ---------------------------------------------------------
+    # =========================================================
+    # ACHADOS DE SEGURANÇA
+    # =========================================================
 
     st.subheader("⚠️ Achados de segurança")
 
@@ -396,9 +529,9 @@ if scan_button:
 
     st.divider()
 
-    # ---------------------------------------------------------
+    # =========================================================
     # JSON
-    # ---------------------------------------------------------
+    # =========================================================
 
     st.subheader("📄 Resultado JSON")
 
