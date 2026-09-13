@@ -1,290 +1,300 @@
+ cd ~/bluescan-v2
 
-cd ~/bluescan-v2
+cp correlator.py correlator.backup.py
 
 cat > correlator.py <<'PY'
-SEVERITY_WEIGHT = {
-    "CRITICAL": 25,
-    "HIGH": 15,
-    "MEDIUM": 8,
-    "LOW": 3,
+SEVERITY_ORDER = {
     "INFO": 0,
+    "LOW": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "CRITICAL": 4,
 }
 
 
-def normalize_severity(value):
-    """
-    Normaliza a severidade para os níveis utilizados pelo BlueScan.
-    """
+def normalize_finding(finding, source):
+    severity = str(
+        finding.get("severity", "INFO")
+    ).upper()
 
-    if value is None:
-        return "INFO"
+    if severity not in SEVERITY_ORDER:
+        severity = "INFO"
 
-    severity = str(value).strip().upper()
-
-    aliases = {
-        "CRIT": "CRITICAL",
-        "CRÍTICO": "CRITICAL",
-        "CRITICO": "CRITICAL",
-
-        "ALTO": "HIGH",
-
-        "MÉDIO": "MEDIUM",
-        "MEDIO": "MEDIUM",
-
-        "BAIXO": "LOW",
-
-        "INFORMATION": "INFO",
-        "INFORMATIONAL": "INFO",
-        "HARDENING": "INFO",
-    }
-
-    return aliases.get(
-        severity,
-        severity if severity in SEVERITY_WEIGHT else "INFO",
+    title = finding.get(
+        "title",
+        "Achado sem título"
     )
 
-
-def collect_findings(http_result, tls_result):
-    """
-    Coleta achados dos módulos do BlueScan.
-    """
-
-    findings = []
-
-    if isinstance(http_result, dict):
-
-        http_findings = http_result.get(
-            "findings",
-            [],
-        )
-
-        if isinstance(http_findings, list):
-            findings.extend(http_findings)
-
-    if isinstance(tls_result, dict):
-
-        tls_findings = tls_result.get(
-            "findings",
-            [],
-        )
-
-        if isinstance(tls_findings, list):
-            findings.extend(tls_findings)
-
-    return findings
-
-
-def normalize_finding(finding):
-    """
-    Normaliza um achado individual.
-    """
-
-    if not isinstance(finding, dict):
-        return None
-
-    severity = normalize_severity(
-        finding.get(
-            "severity",
-            "INFO",
-        )
+    category = finding.get(
+        "category",
+        source.upper()
     )
+
+    evidence = finding.get(
+        "evidence",
+        ""
+    )
+
+    # Classificação profissional
+    if severity == "INFO":
+        finding_type = finding.get(
+            "type",
+            "INFORMATION"
+        )
+    elif "header" in title.lower() or \
+         "política" in title.lower() or \
+         "policy" in title.lower():
+        finding_type = "CONFIGURATION"
+    else:
+        finding_type = finding.get(
+            "type",
+            "VULNERABILITY"
+        )
+
+    # Status
+    status = finding.get(
+        "status",
+        "CONFIRMED"
+    )
+
+    if status not in {
+        "CONFIRMED",
+        "INDICATION"
+    }:
+        status = "CONFIRMED"
+
+    # Confiança
+    confidence = finding.get(
+        "confidence",
+        "HIGH"
+    )
+
+    if confidence not in {
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+    }:
+        confidence = "HIGH"
 
     return {
-        "title": str(
-            finding.get(
-                "title",
-                "Achado",
-            )
+        "id": finding.get(
+            "id",
+            title.lower()
+            .replace(" ", "-")
+            .replace("/", "-")
         ),
+
+        "title": title,
+
         "severity": severity,
-        "category": str(
-            finding.get(
-                "category",
-                "General",
-            )
+
+        "type": finding_type,
+
+        "status": status,
+
+        "confidence": confidence,
+
+        "category": category,
+
+        "source": source,
+
+        "cve": finding.get(
+            "cve"
         ),
-        "evidence": str(
-            finding.get(
-                "evidence",
-                "",
-            )
+
+        "cwe": finding.get(
+            "cwe"
         ),
-        "recommendation": str(
-            finding.get(
-                "recommendation",
-                "",
-            )
+
+        "evidence": evidence,
+
+        "description": finding.get(
+            "description",
+            "O scanner identificou esta condição no alvo analisado."
+        ),
+
+        "impact": finding.get(
+            "impact",
+            "A condição pode reduzir a segurança da aplicação ou aumentar a superfície de ataque."
+        ),
+
+        "consequence": finding.get(
+            "consequence",
+            "Se explorada por um agente malicioso, esta condição pode facilitar ataques contra a aplicação ou seus usuários."
+        ),
+
+        "recommendation": finding.get(
+            "recommendation",
+            "Revisar a configuração e aplicar as boas práticas de segurança recomendadas."
+        ),
+
+        "validation": finding.get(
+            "validation",
+            "Executar uma nova varredura após a correção e confirmar que o achado não aparece mais."
         ),
     }
-
-
-def deduplicate_findings(findings):
-    """
-    Remove achados duplicados mantendo a primeira ocorrência.
-    """
-
-    unique = []
-    seen = set()
-
-    for finding in findings:
-
-        key = (
-            finding.get("severity"),
-            finding.get("title"),
-            finding.get("category"),
-        )
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        unique.append(finding)
-
-    return unique
-
-
-def calculate_summary(findings):
-    """
-    Conta achados por severidade.
-    """
-
-    summary = {
-        "critical": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0,
-        "info": 0,
-    }
-
-    for finding in findings:
-
-        severity = normalize_severity(
-            finding.get("severity")
-        )
-
-        key = severity.lower()
-
-        if key in summary:
-            summary[key] += 1
-
-    return summary
-
-
-def calculate_score(findings):
-    """
-    Calcula score de segurança de 0 a 100.
-
-    Quanto maior o número de achados relevantes,
-    menor o score.
-    """
-
-    penalty = 0
-
-    for finding in findings:
-
-        severity = normalize_severity(
-            finding.get("severity")
-        )
-
-        penalty += SEVERITY_WEIGHT.get(
-            severity,
-            0,
-        )
-
-    score = max(
-        0,
-        100 - penalty,
-    )
-
-    return score
-
-
-def calculate_risk(summary):
-    """
-    Determina o risco geral.
-    """
-
-    if summary["critical"] > 0:
-        return "CRITICAL"
-
-    if summary["high"] > 0:
-        return "HIGH"
-
-    if summary["medium"] > 0:
-        return "MEDIUM"
-
-    if summary["low"] > 0:
-        return "LOW"
-
-    return "INFO"
-
-
-def risk_label(risk):
-    """
-    Retorna descrição amigável do risco.
-    """
-
-    labels = {
-        "CRITICAL": "CRÍTICO",
-        "HIGH": "ALTO",
-        "MEDIUM": "MÉDIO",
-        "LOW": "BAIXO",
-        "INFO": "INFORMAÇÕES",
-    }
-
-    return labels.get(
-        risk,
-        "INFORMAÇÕES",
-    )
 
 
 def correlate(
     http_result=None,
     tls_result=None,
+    dns_result=None,
+    technology_result=None,
+    nuclei_result=None,
+    whatweb_result=None,
+    subdomains_result=None,
 ):
-    """
-    Correlaciona os resultados dos módulos HTTP e TLS.
-    """
+    findings = []
 
-    raw_findings = collect_findings(
-        http_result,
-        tls_result,
-    )
+    sources = [
+        ("HTTP", http_result),
+        ("TLS", tls_result),
+        ("DNS", dns_result),
+        ("TECHNOLOGY", technology_result),
+        ("NUCLEI", nuclei_result),
+        ("WHATWEB", whatweb_result),
+        ("SUBFINDER", subdomains_result),
+    ]
 
-    normalized = []
+    for source, result in sources:
 
-    for finding in raw_findings:
+        if not isinstance(result, dict):
+            continue
 
-        normalized_finding = normalize_finding(
-            finding
+        result_findings = result.get(
+            "findings",
+            []
         )
 
-        if normalized_finding:
-            normalized.append(
-                normalized_finding
+        if not isinstance(
+            result_findings,
+            list
+        ):
+            continue
+
+        for finding in result_findings:
+
+            if not isinstance(
+                finding,
+                dict
+            ):
+                continue
+
+            findings.append(
+                normalize_finding(
+                    finding,
+                    source
+                )
             )
 
-    findings = deduplicate_findings(
-        normalized
+    # Remove duplicados
+    unique = {}
+
+    for finding in findings:
+
+        key = (
+            finding["title"],
+            finding["category"],
+            finding["source"],
+            finding["evidence"],
+        )
+
+        unique[key] = finding
+
+    findings = list(
+        unique.values()
     )
 
-    summary = calculate_summary(
-        findings
+    # Mais graves primeiro
+    findings.sort(
+        key=lambda item:
+            SEVERITY_ORDER.get(
+                item["severity"],
+                0
+            ),
+        reverse=True
     )
 
-    score = calculate_score(
-        findings
-    )
+    counts = {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "LOW": 0,
+        "INFO": 0,
+    }
 
-    risk = calculate_risk(
-        summary
-    )
+    types = {
+        "VULNERABILITY": 0,
+        "CONFIGURATION": 0,
+        "HARDENING": 0,
+        "INFORMATION": 0,
+    }
+
+    confirmed = 0
+    indications = 0
+
+    for finding in findings:
+
+        severity = finding["severity"]
+
+        if severity in counts:
+            counts[severity] += 1
+
+        finding_type = finding["type"]
+
+        if finding_type in types:
+            types[finding_type] += 1
+
+        if finding["status"] == "CONFIRMED":
+            confirmed += 1
+        else:
+            indications += 1
+
+    # Risco geral
+    if counts["CRITICAL"] > 0:
+        overall_risk = "CRITICAL"
+    elif counts["HIGH"] > 0:
+        overall_risk = "HIGH"
+    elif counts["MEDIUM"] > 0:
+        overall_risk = "MEDIUM"
+    elif counts["LOW"] > 0:
+        overall_risk = "LOW"
+    else:
+        overall_risk = "INFO"
 
     return {
-        "risk": risk,
-        "risk_label": risk_label(risk),
-        "score": score,
-        "summary": summary,
+        "risk": overall_risk,
+
+        "summary": {
+            "total_findings": len(findings),
+
+            "confirmed": confirmed,
+
+            "indications": indications,
+
+            "critical": counts["CRITICAL"],
+
+            "high": counts["HIGH"],
+
+            "medium": counts["MEDIUM"],
+
+            "low": counts["LOW"],
+
+            "info": counts["INFO"],
+
+            "vulnerabilities":
+                types["VULNERABILITY"],
+
+            "configuration":
+                types["CONFIGURATION"],
+
+            "hardening":
+                types["HARDENING"],
+
+            "information":
+                types["INFORMATION"],
+        },
+
         "findings": findings,
     }
 PY
