@@ -1,7 +1,7 @@
 cd ~/bluescan-v2
 source .venv/bin/activate
 
-cp scanner.py scanner.before_whatweb_fix.py
+cp scanner.py scanner.before_logger_fix.py
 
 cat > scanner.py <<'PY'
 from scanner_http import scan_http
@@ -17,7 +17,10 @@ import re
 def run_whatweb(url: str) -> dict:
     """
     Executa WhatWeb em modo Stealthy (-a 1).
-    Uso destinado a alvos autorizados/laboratório.
+
+    O WhatWeb 0.6.4 pode retornar um erro de logger
+    "closed stream" depois de produzir um resultado válido.
+    Por isso o stdout é analisado antes do returncode.
     """
 
     try:
@@ -37,37 +40,39 @@ def run_whatweb(url: str) -> dict:
         stdout = process.stdout.strip()
         stderr = process.stderr.strip()
 
-        if process.returncode != 0:
-            return {
-                "status": "error",
-                "url": url,
-                "returncode": process.returncode,
-                "error": stderr or stdout or "WhatWeb retornou erro.",
-                "plugins": [],
-            }
-
         plugins = []
 
-        # WhatWeb normalmente retorna:
+        # Remove possíveis linhas vazias e processa a saída
+        # normal do WhatWeb:
         #
         # https://example.com [200 OK] Allow[GET, HEAD],
         # Country[UNITED STATES][US], HTML5,
         # HTTPServer[cloudflare], IP[...],
-        # Title[Example Domain]
-        #
-        # Extraímos cada plugin sem inventar informações.
+        # Title[Example Domain], ...
 
-        match = re.search(
-            r"\[.*?\]\s*(.*)$",
-            stdout,
-            re.DOTALL,
-        )
+        for line in stdout.splitlines():
+            line = line.strip()
 
-        if match:
+            if not line:
+                continue
+
+            # Ignora linhas que não parecem ser um resultado
+            # de alvo do WhatWeb.
+            if not line.startswith(url):
+                continue
+
+            match = re.search(
+                r"\[[0-9]{3}(?: [^\]]+)?\]\s*(.*)$",
+                line,
+                re.DOTALL,
+            )
+
+            if not match:
+                continue
+
             plugin_text = match.group(1).strip()
 
-            # Divide pelos plugins separados por vírgula,
-            # preservando valores entre colchetes.
+            # Captura nomes de plugins com seus valores.
             parts = re.findall(
                 r"(?:[A-Za-z0-9_.+-]+)"
                 r"(?:\[[^\]]*\])*",
@@ -101,13 +106,56 @@ def run_whatweb(url: str) -> dict:
                     "raw": part,
                 })
 
+            break
+
+        # Se encontramos plugins, o resultado é aproveitável,
+        # mesmo que o WhatWeb tenha retornado código diferente de 0.
+        if plugins:
+            return {
+                "status": "ok",
+                "url": url,
+                "returncode": process.returncode,
+                "plugins": plugins,
+                "plugin_count": len(plugins),
+                "warning": (
+                    stderr
+                    if process.returncode != 0 and stderr
+                    else None
+                ),
+            }
+
+        # Também consideramos válido um resultado HTTP sem plugins.
+        if stdout.startswith(url):
+            return {
+                "status": "ok",
+                "url": url,
+                "returncode": process.returncode,
+                "plugins": [],
+                "plugin_count": 0,
+                "raw": stdout,
+                "warning": (
+                    stderr
+                    if process.returncode != 0 and stderr
+                    else None
+                ),
+            }
+
+        if process.returncode != 0:
+            return {
+                "status": "error",
+                "url": url,
+                "returncode": process.returncode,
+                "error": stderr or stdout or "WhatWeb retornou erro.",
+                "plugins": [],
+            }
+
         return {
             "status": "ok",
             "url": url,
             "returncode": process.returncode,
+            "plugins": [],
+            "plugin_count": 0,
             "raw": stdout,
-            "plugins": plugins,
-            "plugin_count": len(plugins),
         }
 
     except FileNotFoundError:
