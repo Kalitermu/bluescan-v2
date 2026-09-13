@@ -1,28 +1,27 @@
-cd ~/bluescan-v2
+(
+          cd ~/bluescan-v2
 source .venv/bin/activate
 
 cat > scanner_nuclei.py <<'PY'
 import json
-import os
 import subprocess
-import tempfile
 
 
-SAFE_TAGS = "misconfig,exposure,ssl,tech"
+SAFE_TAGS = "ssl,misconfig"
+
+NUCLEI_TIMEOUT = 15
 
 
 def scan_nuclei(url: str) -> dict:
     """
-    Executa Nuclei em modo controlado.
+    Executa Nuclei de forma controlada.
 
-    Esta versão utiliza somente categorias voltadas a:
-    - misconfiguração
-    - exposição
-    - SSL/TLS
-    - identificação tecnológica
+    O Nuclei é opcional no BlueScan.
+    Se não terminar dentro do limite, o módulo retorna
+    TIMEOUT e o restante do scanner continua normalmente.
 
-    Os resultados são tratados como INDICAÇÃO e precisam
-    de validação manual antes de serem considerados
+    Resultados do Nuclei são tratados como INDICATION.
+    Eles não são classificados automaticamente como
     vulnerabilidades confirmadas.
     """
 
@@ -37,137 +36,121 @@ def scan_nuclei(url: str) -> dict:
 
     url = url.strip()
 
-    temp_path = None
+    cmd = [
+        "nuclei",
+        "-u",
+        url,
+        "-tags",
+        SAFE_TAGS,
+        "-rl",
+        "1",
+        "-c",
+        "1",
+        "-timeout",
+        "3",
+        "-retries",
+        "0",
+        "-silent",
+    ]
 
     try:
-        fd, temp_path = tempfile.mkstemp(
-            prefix="bluescan-nuclei-",
-            suffix=".jsonl",
-        )
-
-        os.close(fd)
-
-        cmd = [
-            "nuclei",
-            "-u",
-            url,
-            "-tags",
-            SAFE_TAGS,
-            "-rl",
-            "3",
-            "-c",
-            "2",
-            "-timeout",
-            "10",
-            "-retries",
-            "0",
-            "-jsonl-export",
-            temp_path,
-            "-silent",
-        ]
-
         process = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
+            timeout=NUCLEI_TIMEOUT,
         )
+
+        stdout = process.stdout or ""
+        stderr = process.stderr or ""
 
         findings = []
 
-        if os.path.exists(temp_path):
+        for line in stdout.splitlines():
 
-            with open(
-                temp_path,
-                "r",
-                encoding="utf-8",
-                errors="replace",
-            ) as file:
+            line = line.strip()
 
-                for line in file:
+            if not line:
+                continue
 
-                    line = line.strip()
+            # Nuclei pode retornar JSONL quando configurado
+            # para JSON. Se a linha não for JSON, ignoramos.
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-                    if not line:
-                        continue
+            if not isinstance(item, dict):
+                continue
 
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+            info = item.get("info", {})
 
-                    info = item.get(
-                        "info",
-                        {},
-                    )
+            if not isinstance(info, dict):
+                info = {}
 
-                    if not isinstance(info, dict):
-                        info = {}
+            classification = info.get(
+                "classification",
+                {},
+            )
 
-                    classification = info.get(
-                        "classification",
-                        {},
-                    )
+            if not isinstance(classification, dict):
+                classification = {}
 
-                    if not isinstance(
-                        classification,
-                        dict,
-                    ):
-                        classification = {}
+            severity = str(
+                info.get(
+                    "severity",
+                    "info",
+                )
+            ).upper()
 
-                    findings.append({
-                        "template_id": item.get(
-                            "template-id",
-                            item.get("template_id", ""),
-                        ),
-                        "name": info.get(
-                            "name",
-                            "Achado Nuclei",
-                        ),
-                        "severity": str(
-                            info.get(
-                                "severity",
-                                "info",
-                            )
-                        ).upper(),
-                        "status": "INDICATION",
-                        "source": "Nuclei",
-                        "matched_at": item.get(
-                            "matched-at",
-                            url,
-                        ),
-                        "type": info.get(
-                            "type",
-                            "",
-                        ),
-                        "description": info.get(
-                            "description",
-                            "",
-                        ),
-                        "reference": info.get(
-                            "reference",
-                            [],
-                        ),
-                        "cve": classification.get(
-                            "cve-id",
-                            [],
-                        ),
-                        "cwe": classification.get(
-                            "cwe-id",
-                            [],
-                        ),
-                        "evidence": item.get(
-                            "extracted-results",
-                            [],
-                        ),
-                    })
-
-        stderr = (
-            process.stderr.strip()
-            if process.stderr
-            else ""
-        )
+            findings.append({
+                "template_id": item.get(
+                    "template-id",
+                    item.get("template_id", ""),
+                ),
+                "name": info.get(
+                    "name",
+                    "Achado Nuclei",
+                ),
+                "severity": severity,
+                "status": "INDICATION",
+                "source": "Nuclei",
+                "category": "SECURITY_SCAN",
+                "matched_at": item.get(
+                    "matched-at",
+                    url,
+                ),
+                "type": info.get(
+                    "type",
+                    "",
+                ),
+                "description": info.get(
+                    "description",
+                    "",
+                ),
+                "reference": info.get(
+                    "reference",
+                    [],
+                ),
+                "cve": classification.get(
+                    "cve-id",
+                    [],
+                ),
+                "cwe": classification.get(
+                    "cwe-id",
+                    [],
+                ),
+                "evidence": item.get(
+                    "extracted-results",
+                    [],
+                ),
+                "validation": (
+                    "Indicação automatizada. "
+                    "Validar manualmente antes de "
+                    "classificar como vulnerabilidade confirmada."
+                ),
+            })
 
         return {
             "status": "ok",
@@ -176,7 +159,8 @@ def scan_nuclei(url: str) -> dict:
             "findings": findings,
             "count": len(findings),
             "returncode": process.returncode,
-            "warning": stderr or None,
+            "warning": stderr.strip() or None,
+            "timeout_seconds": NUCLEI_TIMEOUT,
         }
 
     except FileNotFoundError:
@@ -186,22 +170,23 @@ def scan_nuclei(url: str) -> dict:
             "target": url,
             "findings": [],
             "count": 0,
-            "error": (
-                "Nuclei não encontrado no sistema."
-            ),
+            "error": "Nuclei não encontrado no sistema.",
+            "timeout_seconds": NUCLEI_TIMEOUT,
         }
 
     except subprocess.TimeoutExpired:
 
         return {
-            "status": "error",
+            "status": "timeout",
             "target": url,
             "findings": [],
             "count": 0,
             "error": (
-                "Nuclei excedeu o limite "
-                "de 120 segundos."
+                "Nuclei não concluiu dentro de "
+                f"{NUCLEI_TIMEOUT} segundos. "
+                "O restante do BlueScan pode continuar."
             ),
+            "timeout_seconds": NUCLEI_TIMEOUT,
         }
 
     except Exception as exc:
@@ -212,15 +197,6 @@ def scan_nuclei(url: str) -> dict:
             "findings": [],
             "count": 0,
             "error": str(exc),
+            "timeout_seconds": NUCLEI_TIMEOUT,
         }
-
-    finally:
-
-        if temp_path:
-
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
-PY
+PY                  
