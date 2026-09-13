@@ -1,6 +1,7 @@
- cd ~/bluescan-v2
 
-cp correlator.py correlator.backup.py
+cd ~/bluescan-v2
+
+cp correlator.py correlator.backup_antes_profissional.py
 
 cat > correlator.py <<'PY'
 SEVERITY_ORDER = {
@@ -12,125 +13,175 @@ SEVERITY_ORDER = {
 }
 
 
+def make_id(title):
+    return (
+        str(title)
+        .lower()
+        .replace(" ", "-")
+        .replace("/", "-")
+        .replace(":", "")
+    )
+
+
 def normalize_finding(finding, source):
-    severity = str(
-        finding.get("severity", "INFO")
-    ).upper()
+    title = str(finding.get(
+        "title",
+        "Achado sem título"
+    ))
+
+    severity = str(finding.get(
+        "severity",
+        "INFO"
+    )).upper()
 
     if severity not in SEVERITY_ORDER:
         severity = "INFO"
 
-    title = finding.get(
-        "title",
-        "Achado sem título"
-    )
-
-    category = finding.get(
-        "category",
-        source.upper()
-    )
-
-    evidence = finding.get(
+    evidence = str(finding.get(
         "evidence",
         ""
-    )
+    ))
 
-    # Classificação profissional
+    title_lower = title.lower()
+
     if severity == "INFO":
-        finding_type = finding.get(
-            "type",
-            "INFORMATION"
-        )
-    elif "header" in title.lower() or \
-         "política" in title.lower() or \
-         "policy" in title.lower():
+        finding_type = "INFORMATION"
+    elif any(word in title_lower for word in [
+        "header",
+        "cabeçalho",
+        "política",
+        "policy",
+        "cookie",
+        "configuração",
+    ]):
         finding_type = "CONFIGURATION"
     else:
-        finding_type = finding.get(
-            "type",
-            "VULNERABILITY"
-        )
+        finding_type = "VULNERABILITY"
 
-    # Status
-    status = finding.get(
+    status = str(finding.get(
         "status",
         "CONFIRMED"
-    )
+    )).upper()
 
-    if status not in {
-        "CONFIRMED",
-        "INDICATION"
-    }:
+    if status not in {"CONFIRMED", "INDICATION"}:
         status = "CONFIRMED"
 
-    # Confiança
-    confidence = finding.get(
+    confidence = str(finding.get(
         "confidence",
         "HIGH"
-    )
+    )).upper()
 
-    if confidence not in {
-        "HIGH",
-        "MEDIUM",
-        "LOW"
-    }:
+    if confidence not in {"HIGH", "MEDIUM", "LOW"}:
         confidence = "HIGH"
+
+    if finding_type == "CONFIGURATION":
+        description = (
+            "Foi identificada uma configuração de "
+            "segurança ausente ou inadequada."
+        )
+
+        impact = (
+            "A ausência dessa proteção pode reduzir "
+            "as defesas da aplicação contra determinados "
+            "cenários de ataque."
+        )
+
+        consequence = (
+            "Um atacante poderá se beneficiar da "
+            "proteção ausente, dependendo das demais "
+            "condições da aplicação."
+        )
+
+    elif finding_type == "VULNERABILITY":
+        description = (
+            "Foi identificada uma condição que pode "
+            "representar uma vulnerabilidade de segurança."
+        )
+
+        impact = (
+            "A condição pode aumentar o risco de "
+            "comprometimento da aplicação ou de seus dados."
+        )
+
+        consequence = (
+            "Se explorável, poderá afetar a confidencialidade, "
+            "integridade ou disponibilidade."
+        )
+
+    else:
+        description = (
+            "Foi identificada uma informação relevante "
+            "para a avaliação de segurança."
+        )
+
+        impact = (
+            "A informação ajuda a compreender a superfície "
+            "de ataque do alvo."
+        )
+
+        consequence = (
+            "A informação isoladamente não significa "
+            "que o sistema esteja comprometido."
+        )
 
     return {
         "id": finding.get(
             "id",
-            title.lower()
-            .replace(" ", "-")
-            .replace("/", "-")
+            make_id(title)
         ),
 
         "title": title,
 
         "severity": severity,
 
-        "type": finding_type,
+        "type": finding.get(
+            "type",
+            finding_type
+        ),
 
         "status": status,
 
         "confidence": confidence,
 
-        "category": category,
+        "category": finding.get(
+            "category",
+            source.upper()
+        ),
 
         "source": source,
 
-        "cve": finding.get(
-            "cve"
-        ),
+        "cve": finding.get("cve"),
 
-        "cwe": finding.get(
-            "cwe"
-        ),
+        "cwe": finding.get("cwe"),
 
         "evidence": evidence,
 
         "description": finding.get(
             "description",
-            "O scanner identificou esta condição no alvo analisado."
+            description
         ),
 
         "impact": finding.get(
             "impact",
-            "A condição pode reduzir a segurança da aplicação ou aumentar a superfície de ataque."
+            impact
         ),
 
         "consequence": finding.get(
             "consequence",
-            "Se explorada por um agente malicioso, esta condição pode facilitar ataques contra a aplicação ou seus usuários."
+            consequence
         ),
 
         "recommendation": finding.get(
             "recommendation",
-            "Revisar a configuração e aplicar as boas práticas de segurança recomendadas."
+            "Revisar a configuração e aplicar "
+            "as boas práticas de segurança."
         ),
 
         "validation": finding.get(
             "validation",
-            "Executar uma nova varredura após a correção e confirmar que o achado não aparece mais."
+            "Executar novamente o BlueScan após "
+            "a correção e confirmar que o achado "
+            "não aparece mais."
         ),
     }
 
@@ -146,7 +197,7 @@ def correlate(
 ):
     findings = []
 
-    sources = [
+    modules = [
         ("HTTP", http_result),
         ("TLS", tls_result),
         ("DNS", dns_result),
@@ -156,62 +207,45 @@ def correlate(
         ("SUBFINDER", subdomains_result),
     ]
 
-    for source, result in sources:
-
+    for source, result in modules:
         if not isinstance(result, dict):
             continue
 
-        result_findings = result.get(
+        raw_findings = result.get(
             "findings",
             []
         )
 
-        if not isinstance(
-            result_findings,
-            list
-        ):
+        if not isinstance(raw_findings, list):
             continue
 
-        for finding in result_findings:
-
-            if not isinstance(
-                finding,
-                dict
-            ):
-                continue
-
-            findings.append(
-                normalize_finding(
-                    finding,
-                    source
+        for finding in raw_findings:
+            if isinstance(finding, dict):
+                findings.append(
+                    normalize_finding(
+                        finding,
+                        source
+                    )
                 )
-            )
 
-    # Remove duplicados
     unique = {}
 
     for finding in findings:
-
         key = (
             finding["title"],
-            finding["category"],
             finding["source"],
             finding["evidence"],
         )
 
         unique[key] = finding
 
-    findings = list(
-        unique.values()
-    )
+    findings = list(unique.values())
 
-    # Mais graves primeiro
     findings.sort(
-        key=lambda item:
-            SEVERITY_ORDER.get(
-                item["severity"],
-                0
-            ),
+        key=lambda item: SEVERITY_ORDER.get(
+            item["severity"],
+            0
+        ),
         reverse=True
     )
 
@@ -234,7 +268,6 @@ def correlate(
     indications = 0
 
     for finding in findings:
-
         severity = finding["severity"]
 
         if severity in counts:
@@ -250,51 +283,36 @@ def correlate(
         else:
             indications += 1
 
-    # Risco geral
     if counts["CRITICAL"] > 0:
-        overall_risk = "CRITICAL"
+        risk = "CRITICAL"
     elif counts["HIGH"] > 0:
-        overall_risk = "HIGH"
+        risk = "HIGH"
     elif counts["MEDIUM"] > 0:
-        overall_risk = "MEDIUM"
+        risk = "MEDIUM"
     elif counts["LOW"] > 0:
-        overall_risk = "LOW"
+        risk = "LOW"
     else:
-        overall_risk = "INFO"
+        risk = "INFO"
 
     return {
-        "risk": overall_risk,
+        "risk": risk,
 
         "summary": {
             "total_findings": len(findings),
-
             "confirmed": confirmed,
-
             "indications": indications,
-
             "critical": counts["CRITICAL"],
-
             "high": counts["HIGH"],
-
             "medium": counts["MEDIUM"],
-
             "low": counts["LOW"],
-
             "info": counts["INFO"],
-
-            "vulnerabilities":
-                types["VULNERABILITY"],
-
-            "configuration":
-                types["CONFIGURATION"],
-
-            "hardening":
-                types["HARDENING"],
-
-            "information":
-                types["INFORMATION"],
+            "vulnerabilities": types["VULNERABILITY"],
+            "configuration": types["CONFIGURATION"],
+            "hardening": types["HARDENING"],
+            "information": types["INFORMATION"],
         },
 
         "findings": findings,
     }
 PY
+     
