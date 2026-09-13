@@ -1,6 +1,5 @@
 cat > ~/bluescan-v2/app.py <<'PY'
 import json
-
 import streamlit as st
 
 from scanner import scan_target
@@ -35,7 +34,7 @@ scan_button = st.button(
 if scan_button:
 
     # ---------------------------------------------------------
-    # Validação do alvo
+    # Validação
     # ---------------------------------------------------------
 
     allowed, reason = validate_target(target)
@@ -47,7 +46,7 @@ if scan_button:
     st.success(reason)
 
     # ---------------------------------------------------------
-    # Execução do scanner
+    # Scanner
     # ---------------------------------------------------------
 
     with st.spinner("Executando análise..."):
@@ -56,32 +55,41 @@ if scan_button:
             result = scan_target(target)
 
         except Exception as exc:
-            st.error(
-                f"Erro durante a análise: {exc}"
-            )
+            st.error("Erro durante a análise.")
+            st.exception(exc)
             st.stop()
 
     # ---------------------------------------------------------
-    # Correlação / risco
+    # Correlação
     # ---------------------------------------------------------
 
-    correlation = result.get(
-        "correlation",
-        {},
-    )
+    try:
 
-    summary = correlation.get(
-        "summary",
-        {},
-    )
+        correlation = result.get(
+            "correlation",
+            {},
+        )
 
-    risk = correlation.get(
-        "risk",
-        "INFO",
-    ).upper()
+        summary = correlation.get(
+            "summary",
+            {},
+        )
+
+        risk = str(
+            correlation.get(
+                "risk",
+                "INFO",
+            )
+        ).upper()
+
+    except Exception as exc:
+
+        st.error("Erro ao processar o resultado.")
+        st.exception(exc)
+        st.stop()
 
     # ---------------------------------------------------------
-    # Risco geral
+    # Risco
     # ---------------------------------------------------------
 
     st.subheader("📊 Risco geral")
@@ -101,61 +109,53 @@ if scan_button:
     else:
         st.success("🟢 INFORMAÇÕES")
 
+    # ---------------------------------------------------------
+    # Resumo
+    # ---------------------------------------------------------
+
+    critical = summary.get("critical", 0)
+    high = summary.get("high", 0)
+    medium = summary.get("medium", 0)
+    low = summary.get("low", 0)
+    info = summary.get("info", 0)
+
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric(
-            "Crítico",
-            summary.get("critical", 0),
-        )
+        st.metric("Crítico", critical)
 
     with col2:
-        st.metric(
-            "Alto",
-            summary.get("high", 0),
-        )
+        st.metric("Alto", high)
 
     with col3:
-        st.metric(
-            "Médio",
-            summary.get("medium", 0),
-        )
+        st.metric("Médio", medium)
 
     with col4:
-        st.metric(
-            "Baixo",
-            summary.get("low", 0),
-        )
+        st.metric("Baixo", low)
 
     with col5:
-        st.metric(
-            "Informações",
-            summary.get("info", 0),
-        )
+        st.metric("Informações", info)
 
     st.divider()
 
     # ---------------------------------------------------------
-    # Resumo dos módulos
+    # Módulos
     # ---------------------------------------------------------
 
     col_http, col_tls, col_dns, col_tech = st.columns(4)
 
-    # ---------------------------------------------------------
     # HTTP
-    # ---------------------------------------------------------
-
     with col_http:
 
         st.subheader("🌐 HTTP")
 
         http = result.get("http")
 
-        if http and not http.get("error"):
+        if isinstance(http, dict) and not http.get("error"):
 
             status = http.get(
                 "status",
-                "OK",
+                "N/D",
             )
 
             st.success(
@@ -164,34 +164,26 @@ if scan_button:
 
         else:
 
-            error = ""
-
-            if isinstance(http, dict):
-                error = http.get(
-                    "error",
-                    "",
-                )
-
             st.error("Falha")
 
-            if error:
-                st.caption(str(error))
+            if isinstance(http, dict):
+                if http.get("error"):
+                    st.caption(
+                        str(http["error"])
+                    )
 
-    # ---------------------------------------------------------
     # TLS
-    # ---------------------------------------------------------
-
     with col_tls:
 
         st.subheader("🔐 TLS")
 
         tls = result.get("tls")
 
-        if tls and not tls.get("error"):
+        if isinstance(tls, dict) and not tls.get("error"):
 
             tls_version = tls.get(
                 "tls_version",
-                "OK",
+                "N/D",
             )
 
             st.success(
@@ -203,14 +195,10 @@ if scan_button:
             st.error("Falha")
 
             if isinstance(tls, dict):
-
-                error = tls.get(
-                    "error",
-                    "",
-                )
-
-                if error:
-                    st.caption(str(error))
+                if tls.get("error"):
+                    st.caption(
+                        str(tls["error"])
+                    )
 
         else:
 
@@ -218,32 +206,19 @@ if scan_button:
                 "Não aplicável"
             )
 
-    # ---------------------------------------------------------
     # DNS
-    # ---------------------------------------------------------
-
     with col_dns:
 
         st.subheader("📡 DNS")
 
         dns = result.get("dns")
 
-        if dns and not dns.get("error"):
-
-            st.success(
-                "Analisado"
-            )
-
+        if isinstance(dns, dict) and not dns.get("error"):
+            st.success("Analisado")
         else:
+            st.error("Falha")
 
-            st.error(
-                "Falha"
-            )
-
-    # ---------------------------------------------------------
     # Tecnologia
-    # ---------------------------------------------------------
-
     with col_tech:
 
         st.subheader("🧩 Tecnologia")
@@ -253,31 +228,30 @@ if scan_button:
             {},
         )
 
+        if not isinstance(
+            technology_result,
+            dict,
+        ):
+            technology_result = {}
+
         technology_count = technology_result.get(
             "count",
             0,
         )
 
-        if technology_count == 1:
-            texto = "1 detectada"
-
-        else:
-            texto = f"{technology_count} detectadas"
-
-        st.info(texto)
+        st.info(
+            f"{technology_count} detectada(s)"
+        )
 
     st.divider()
 
     # ---------------------------------------------------------
-    # Tecnologias detectadas
+    # Tecnologias
     # ---------------------------------------------------------
 
     st.subheader("🔎 Tecnologias detectadas")
 
-    technologies = result.get(
-        "technology",
-        {},
-    ).get(
+    technologies = technology_result.get(
         "technologies",
         [],
     )
@@ -286,26 +260,34 @@ if scan_button:
 
         for technology in technologies:
 
-            name = technology.get(
-                "name",
-                "Tecnologia",
-            )
+            if isinstance(
+                technology,
+                dict,
+            ):
 
-            evidence = technology.get(
-                "evidence",
-                "",
-            )
-
-            if evidence:
-
-                st.write(
-                    f"**{name}** — {evidence}"
+                name = technology.get(
+                    "name",
+                    "Tecnologia",
                 )
+
+                evidence = technology.get(
+                    "evidence",
+                    "",
+                )
+
+                if evidence:
+                    st.write(
+                        f"**{name}** — {evidence}"
+                    )
+                else:
+                    st.write(
+                        f"**{name}**"
+                    )
 
             else:
 
                 st.write(
-                    f"**{name}**"
+                    f"**{technology}**"
                 )
 
     else:
@@ -335,7 +317,21 @@ if scan_button:
 
     else:
 
+        severity_labels = {
+            "CRITICAL": "CRÍTICO",
+            "HIGH": "ALTO",
+            "MEDIUM": "MÉDIO",
+            "LOW": "BAIXO",
+            "INFO": "INFO",
+        }
+
         for finding in findings:
+
+            if not isinstance(
+                finding,
+                dict,
+            ):
+                continue
 
             severity = str(
                 finding.get(
@@ -364,14 +360,10 @@ if scan_button:
                 "",
             )
 
-            # Normalização visual da severidade
-            severity_labels = {
-                "CRITICAL": "CRÍTICO",
-                "HIGH": "ALTO",
-                "MEDIUM": "MÉDIO",
-                "LOW": "BAIXO",
-                "INFO": "INFO",
-            }
+            recommendation = finding.get(
+                "recommendation",
+                "",
+            )
 
             severity_label = severity_labels.get(
                 severity,
@@ -397,11 +389,6 @@ if scan_button:
                         f"**Evidência:** {evidence}"
                     )
 
-                recommendation = finding.get(
-                    "recommendation",
-                    "",
-                )
-
                 if recommendation:
                     st.write(
                         f"**Recomendação:** {recommendation}"
@@ -410,10 +397,10 @@ if scan_button:
     st.divider()
 
     # ---------------------------------------------------------
-    # Relatório JSON
+    # JSON
     # ---------------------------------------------------------
 
-    st.subheader("📄 Relatório JSON")
+    st.subheader("📄 Resultado JSON")
 
     json_result = json.dumps(
         result,
