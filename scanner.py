@@ -1,7 +1,7 @@
 cd ~/bluescan-v2
 source .venv/bin/activate
 
-cp scanner.py scanner.before_logger_fix.py
+cp scanner.py scanner.before_ansi_fix.py
 
 cat > scanner.py <<'PY'
 from scanner_http import scan_http
@@ -14,13 +14,15 @@ import subprocess
 import re
 
 
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
 def run_whatweb(url: str) -> dict:
     """
     Executa WhatWeb em modo Stealthy (-a 1).
 
-    O WhatWeb 0.6.4 pode retornar um erro de logger
-    "closed stream" depois de produzir um resultado válido.
-    Por isso o stdout é analisado antes do returncode.
+    O resultado textual do WhatWeb é convertido para uma
+    estrutura simples de plugins para o BlueScan.
     """
 
     try:
@@ -37,18 +39,10 @@ def run_whatweb(url: str) -> dict:
             timeout=45,
         )
 
-        stdout = process.stdout.strip()
-        stderr = process.stderr.strip()
+        stdout = ANSI_ESCAPE.sub("", process.stdout).strip()
+        stderr = ANSI_ESCAPE.sub("", process.stderr).strip()
 
         plugins = []
-
-        # Remove possíveis linhas vazias e processa a saída
-        # normal do WhatWeb:
-        #
-        # https://example.com [200 OK] Allow[GET, HEAD],
-        # Country[UNITED STATES][US], HTML5,
-        # HTTPServer[cloudflare], IP[...],
-        # Title[Example Domain], ...
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -56,11 +50,11 @@ def run_whatweb(url: str) -> dict:
             if not line:
                 continue
 
-            # Ignora linhas que não parecem ser um resultado
-            # de alvo do WhatWeb.
             if not line.startswith(url):
                 continue
 
+            # Remove o status HTTP:
+            # https://example.com [200 OK] ...
             match = re.search(
                 r"\[[0-9]{3}(?: [^\]]+)?\]\s*(.*)$",
                 line,
@@ -72,10 +66,14 @@ def run_whatweb(url: str) -> dict:
 
             plugin_text = match.group(1).strip()
 
-            # Captura nomes de plugins com seus valores.
+            # Captura:
+            # Allow[GET, HEAD]
+            # Country[UNITED STATES][US]
+            # HTML5
+            # HTTPServer[cloudflare]
+            # etc.
             parts = re.findall(
-                r"(?:[A-Za-z0-9_.+-]+)"
-                r"(?:\[[^\]]*\])*",
+                r"[A-Za-z0-9_.+-]+(?:\[[^\]]*\])*",
                 plugin_text,
             )
 
@@ -108,54 +106,24 @@ def run_whatweb(url: str) -> dict:
 
             break
 
-        # Se encontramos plugins, o resultado é aproveitável,
-        # mesmo que o WhatWeb tenha retornado código diferente de 0.
-        if plugins:
+        # Resultado válido.
+        if stdout.startswith(url):
             return {
                 "status": "ok",
                 "url": url,
                 "returncode": process.returncode,
                 "plugins": plugins,
                 "plugin_count": len(plugins),
-                "warning": (
-                    stderr
-                    if process.returncode != 0 and stderr
-                    else None
-                ),
-            }
-
-        # Também consideramos válido um resultado HTTP sem plugins.
-        if stdout.startswith(url):
-            return {
-                "status": "ok",
-                "url": url,
-                "returncode": process.returncode,
-                "plugins": [],
-                "plugin_count": 0,
                 "raw": stdout,
-                "warning": (
-                    stderr
-                    if process.returncode != 0 and stderr
-                    else None
-                ),
-            }
-
-        if process.returncode != 0:
-            return {
-                "status": "error",
-                "url": url,
-                "returncode": process.returncode,
-                "error": stderr or stdout or "WhatWeb retornou erro.",
-                "plugins": [],
+                "warning": None,
             }
 
         return {
-            "status": "ok",
+            "status": "error",
             "url": url,
             "returncode": process.returncode,
+            "error": stderr or stdout or "WhatWeb não retornou dados.",
             "plugins": [],
-            "plugin_count": 0,
-            "raw": stdout,
         }
 
     except FileNotFoundError:
