@@ -1,3 +1,8 @@
+cd ~/bluescan-v2
+source .venv/bin/activate
+
+cp scanner.py scanner.backup_antes_whatweb.py
+
 cat > scanner.py <<'PY'
 from scanner_http import scan_http
 from scanner_tls import scan_tls
@@ -29,7 +34,7 @@ def scan_target(url):
     http_result = scan_http(url)
     result["http"] = http_result
 
-    # Fingerprinting básico
+    # Fingerprinting interno
     result["technology"] = scan_technology(
         http_result
     )
