@@ -1,45 +1,47 @@
-cd ~/bluescan-v2
-
 cat > app.py <<'PY'
-import json
 import streamlit as st
+import json
 
 from scanner import scan_target
+import target_policy
 from target_policy import validate_target
 
 
 st.set_page_config(
     page_title="BlueScan",
     page_icon="🔵",
-    layout="wide",
+    layout="wide"
 )
-
 
 st.title("🔵 BlueScan")
 st.caption(
-    "Scanner de segurança para laboratório autorizado"
+    "Scanner modular de segurança para alvos próprios "
+    "ou explicitamente autorizados."
 )
 
 
 target = st.text_input(
     "Alvo do laboratório",
-    value="https://example.com",
-    placeholder="https://exemplo.com",
+    value="https://127.0.0.1:8443"
 )
-
 
 scan_button = st.button(
     "🚀 Iniciar análise",
-    type="primary",
-    use_container_width=True,
+    type="primary"
 )
 
 
 if scan_button:
 
-    # =========================================================
-    # VALIDAÇÃO
-    # =========================================================
+    st.write(
+        "DEBUG — target_policy:",
+        target_policy.__file__
+    )
+
+    st.write(
+        "DEBUG — validação:",
+        validate_target(target)
+    )
 
     allowed, reason = validate_target(target)
 
@@ -49,508 +51,336 @@ if scan_button:
 
     st.success(reason)
 
-    # =========================================================
-    # SCANNER
-    # =========================================================
-
     with st.spinner("Executando análise..."):
-
         try:
             result = scan_target(target)
-
         except Exception as exc:
-            st.error("Erro durante a análise.")
-            st.exception(exc)
+            st.error(
+                f"Erro durante a análise: {exc}"
+            )
             st.stop()
 
-    # =========================================================
-    # CORRELAÇÃO
-    # =========================================================
+    correlation = result.get(
+        "correlation",
+        {}
+    )
 
-    try:
+    summary = correlation.get(
+        "summary",
+        {}
+    )
 
-        correlation = result.get(
-            "correlation",
-            {},
-        )
+    risk = correlation.get(
+        "risk",
+        "INFO"
+    )
 
-        if not isinstance(correlation, dict):
-            correlation = {}
-
-        summary = correlation.get(
-            "summary",
-            {},
-        )
-
-        if not isinstance(summary, dict):
-            summary = {}
-
-        risk = str(
-            correlation.get(
-                "risk",
-                "INFO",
-            )
-        ).upper()
-
-    except Exception as exc:
-
-        st.error("Erro ao processar o resultado.")
-        st.exception(exc)
-        st.stop()
-
-    # =========================================================
-    # RISCO GERAL
-    # =========================================================
-
-    st.subheader("📊 Risco geral")
+    st.subheader("Risco geral")
 
     if risk == "CRITICAL":
-        st.error("🔴 CRÍTICO")
-
+        st.error("🔴 CRITICAL")
     elif risk == "HIGH":
-        st.error("🟠 ALTO")
-
+        st.error("🟠 HIGH")
     elif risk == "MEDIUM":
-        st.warning("🟡 MÉDIO")
-
+        st.warning("🟡 MEDIUM")
     elif risk == "LOW":
-        st.info("🔵 BAIXO")
-
+        st.info("🔵 LOW")
     else:
-        st.success("🟢 INFORMAÇÕES")
-
-    # =========================================================
-    # RESUMO
-    # =========================================================
-
-    critical = summary.get("critical", 0)
-    high = summary.get("high", 0)
-    medium = summary.get("medium", 0)
-    low = summary.get("low", 0)
-    info = summary.get("info", 0)
+        st.success("🟢 INFO")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
-    with col1:
-        st.metric("Crítico", critical)
+    col1.metric(
+        "Critical",
+        summary.get("critical", 0)
+    )
 
-    with col2:
-        st.metric("Alto", high)
+    col2.metric(
+        "High",
+        summary.get("high", 0)
+    )
 
-    with col3:
-        st.metric("Médio", medium)
+    col3.metric(
+        "Medium",
+        summary.get("medium", 0)
+    )
 
-    with col4:
-        st.metric("Baixo", low)
+    col4.metric(
+        "Low",
+        summary.get("low", 0)
+    )
 
-    with col5:
-        st.metric("Informações", info)
+    col5.metric(
+        "Info",
+        summary.get("info", 0)
+    )
 
     st.divider()
 
-    # =========================================================
-    # MÓDULOS
-    # =========================================================
-
-    col_http, col_tls, col_dns, col_tech = st.columns(4)
-
-    # ---------------------------------------------------------
-    # HTTP
-    # ---------------------------------------------------------
+    col_http, col_tls, col_dns, col_tech, col_checks = st.columns(5)
 
     with col_http:
-
         st.subheader("🌐 HTTP")
 
         http = result.get("http")
 
-        if isinstance(http, dict) and not http.get("error"):
-
-            status = http.get(
-                "status",
-                "N/D",
-            )
-
+        if http and not http.get("error"):
             st.success(
-                f"HTTP {status}"
+                f"HTTP {http.get('status')}"
             )
-
         else:
-
             st.error("Falha")
 
-            if isinstance(http, dict):
-                if http.get("error"):
-                    st.caption(
-                        str(http["error"])
-                    )
-
-    # ---------------------------------------------------------
-    # TLS
-    # ---------------------------------------------------------
-
     with col_tls:
-
         st.subheader("🔐 TLS")
 
         tls = result.get("tls")
 
-        if isinstance(tls, dict) and not tls.get("error"):
-
-            tls_version = tls.get(
-                "tls_version",
-                "N/D",
-            )
-
+        if tls and not tls.get("error"):
             st.success(
-                tls_version
+                tls.get(
+                    "tls_version",
+                    "OK"
+                )
             )
-
-        elif target.lower().startswith("https://"):
-
+        elif target.startswith("https://"):
             st.error("Falha")
-
-            if isinstance(tls, dict):
-                if tls.get("error"):
-                    st.caption(
-                        str(tls["error"])
-                    )
-
         else:
-
-            st.info(
-                "Não aplicável"
-            )
-
-    # ---------------------------------------------------------
-    # DNS
-    # ---------------------------------------------------------
+            st.info("Não aplicável")
 
     with col_dns:
-
         st.subheader("📡 DNS")
 
         dns = result.get("dns")
 
-        if isinstance(dns, dict) and not dns.get("error"):
+        if dns:
             st.success("Analisado")
-
         else:
             st.error("Falha")
 
-    # ---------------------------------------------------------
-    # TECNOLOGIA
-    # ---------------------------------------------------------
-
     with col_tech:
-
         st.subheader("🧩 Tecnologia")
 
-        technology_result = result.get(
+        tech = result.get(
             "technology",
-            {},
-        )
-
-        if not isinstance(
-            technology_result,
-            dict,
-        ):
-            technology_result = {}
-
-        technology_count = technology_result.get(
-            "count",
-            0,
+            {}
         )
 
         st.info(
-            f"{technology_count} detectada(s)"
+            f"{tech.get('count', 0)} detectadas"
         )
+
+    with col_checks:
+        st.subheader("🛡️ Checks")
+
+        security_checks = result.get(
+            "security_checks",
+            {}
+        )
+
+        if security_checks.get("status") == "ok":
+            st.success(
+                f"{security_checks.get('count', 0)} achados"
+            )
+        elif security_checks.get("status") == "timeout":
+            st.warning("Timeout")
+        else:
+            st.error("Falha")
 
     st.divider()
 
-    # =========================================================
-    # WHATWEB
-    # =========================================================
+    st.subheader("🔎 Tecnologias detectadas")
 
-    st.subheader("🔎 Fingerprinting — WhatWeb")
-
-    whatweb = result.get(
-        "whatweb",
-        {},
-    )
-
-    if not isinstance(
-        whatweb,
-        dict,
-    ):
-        whatweb = {}
-
-    whatweb_status = whatweb.get(
-        "status",
-        "error",
-    )
-
-    if whatweb_status == "ok":
-
-        plugin_count = whatweb.get(
-            "plugin_count",
-            0,
-        )
-
-        st.success(
-            f"WhatWeb executado — {plugin_count} "
-            f"detecção(ões)"
-        )
-
-        plugins = whatweb.get(
-            "plugins",
-            [],
-        )
-
-        if plugins:
-
-            rows = []
-
-            for plugin in plugins:
-
-                if not isinstance(
-                    plugin,
-                    dict,
-                ):
-                    continue
-
-                name = plugin.get(
-                    "name",
-                    "N/D",
-                )
-
-                details = plugin.get(
-                    "details",
-                    [],
-                )
-
-                if isinstance(
-                    details,
-                    list,
-                ):
-                    details_text = ", ".join(
-                        str(x)
-                        for x in details
-                    )
-                else:
-                    details_text = str(details)
-
-                rows.append(
-                    {
-                        "Tecnologia / Plugin": name,
-                        "Detalhes": details_text or "—",
-                    }
-                )
-
-            if rows:
-                st.dataframe(
-                    rows,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-        warning = whatweb.get(
-            "warning"
-        )
-
-        if warning:
-            st.warning(
-                str(warning)
-            )
-
-    else:
-
-        st.warning(
-            "WhatWeb não conseguiu concluir a análise."
-        )
-
-        error = whatweb.get(
-            "error"
-        )
-
-        if error:
-            st.caption(
-                str(error)
-            )
-
-    st.divider()
-
-    # =========================================================
-    # TECNOLOGIAS DETECTADAS PELO BLUESCAN
-    # =========================================================
-
-    st.subheader("🧩 Tecnologias detectadas pelo BlueScan")
-
-    technologies = technology_result.get(
+    technologies = result.get(
+        "technology",
+        {}
+    ).get(
         "technologies",
-        [],
+        []
     )
 
     if technologies:
 
         for technology in technologies:
 
-            if not isinstance(
-                technology,
-                dict,
-            ):
-                continue
-
-            name = technology.get(
-                "name",
-                "Tecnologia",
+            st.write(
+                f"**{technology['name']}** — "
+                f"{technology['evidence']}"
             )
-
-            evidence = technology.get(
-                "evidence",
-                "",
-            )
-
-            if evidence:
-
-                st.write(
-                    f"**{name}** — {evidence}"
-                )
-
-            else:
-
-                st.write(
-                    f"**{name}**"
-                )
 
     else:
-
         st.write(
             "Nenhuma tecnologia identificada."
         )
 
     st.divider()
 
-    # =========================================================
-    # ACHADOS DE SEGURANÇA
-    # =========================================================
+    st.subheader("🛡️ Security Checks")
 
-    st.subheader("⚠️ Achados de segurança")
+    security_checks = result.get(
+        "security_checks",
+        {}
+    )
+
+    security_findings = security_checks.get(
+        "findings",
+        []
+    )
+
+    if security_checks.get("status") == "ok":
+
+        st.caption(
+            "Verificações automatizadas de configuração "
+            "e headers HTTP. Os resultados são indicações "
+            "e devem ser validados manualmente."
+        )
+
+        if not security_findings:
+
+            st.success(
+                "Nenhuma indicação encontrada."
+            )
+
+        else:
+
+            for finding in security_findings:
+
+                severity = finding.get(
+                    "severity",
+                    "INFO"
+                )
+
+                title = finding.get(
+                    "title",
+                    "Achado"
+                )
+
+                category = finding.get(
+                    "category",
+                    ""
+                )
+
+                evidence = finding.get(
+                    "evidence",
+                    ""
+                )
+
+                recommendation = finding.get(
+                    "recommendation",
+                    ""
+                )
+
+                source = finding.get(
+                    "source",
+                    "BlueScan Checks"
+                )
+
+                with st.expander(
+                    f"[{severity}] {title}"
+                ):
+
+                    st.write(
+                        f"**Categoria:** {category}"
+                    )
+
+                    st.write(
+                        f"**Origem:** {source}"
+                    )
+
+                    st.write(
+                        f"**Evidência:** {evidence}"
+                    )
+
+                    st.write(
+                        f"**Recomendação:** "
+                        f"{recommendation}"
+                    )
+
+                    st.caption(
+                        "Status: INDICATION — "
+                        "validar manualmente."
+                    )
+
+    else:
+
+        st.warning(
+            security_checks.get(
+                "error",
+                "Security Checks não disponível."
+            )
+        )
+
+    st.divider()
+
+    st.subheader("⚠️ Achados correlacionados")
 
     findings = correlation.get(
         "findings",
-        [],
+        []
     )
 
     if not findings:
 
         st.success(
-            "Nenhum achado foi identificado."
+            "Nenhum achado correlacionado."
         )
 
     else:
 
-        severity_labels = {
-            "CRITICAL": "CRÍTICO",
-            "HIGH": "ALTO",
-            "MEDIUM": "MÉDIO",
-            "LOW": "BAIXO",
-            "INFO": "INFO",
-        }
-
         for finding in findings:
 
-            if not isinstance(
-                finding,
-                dict,
-            ):
-                continue
-
-            severity = str(
-                finding.get(
-                    "severity",
-                    "INFO",
-                )
-            ).upper()
+            severity = finding.get(
+                "severity",
+                "INFO"
+            )
 
             title = finding.get(
                 "title",
-                "Achado",
-            )
-
-            category = finding.get(
-                "category",
-                "",
-            )
-
-            source = finding.get(
-                "source",
-                "",
+                "Achado"
             )
 
             evidence = finding.get(
                 "evidence",
-                "",
+                ""
             )
 
-            recommendation = finding.get(
-                "recommendation",
-                "",
-            )
-
-            severity_label = severity_labels.get(
-                severity,
-                "INFO",
+            source = finding.get(
+                "source",
+                ""
             )
 
             with st.expander(
-                f"[{severity_label}] {title}"
+                f"[{severity}] {title}"
             ):
 
-                if category:
-                    st.write(
-                        f"**Categoria:** {category}"
-                    )
+                st.write(
+                    f"**Categoria:** "
+                    f"{finding.get('category', '')}"
+                )
 
-                if source:
-                    st.write(
-                        f"**Origem:** {source}"
-                    )
+                st.write(
+                    f"**Origem:** {source}"
+                )
 
-                if evidence:
-                    st.write(
-                        f"**Evidência:** {evidence}"
-                    )
-
-                if recommendation:
-                    st.write(
-                        f"**Recomendação:** {recommendation}"
-                    )
+                st.write(
+                    f"**Evidência:** {evidence}"
+                )
 
     st.divider()
 
-    # =========================================================
-    # JSON
-    # =========================================================
-
     st.subheader("📄 Resultado JSON")
 
-    json_result = json.dumps(
-        result,
-        indent=2,
-        ensure_ascii=False,
-    )
-
     st.download_button(
-        label="⬇️ Baixar relatório JSON",
-        data=json_result,
+        "⬇️ Baixar JSON",
+        data=json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False
+        ),
         file_name="bluescan-report.json",
-        mime="application/json",
-        use_container_width=True,
+        mime="application/json"
     )
 
-    with st.expander(
-        "🔍 Ver JSON completo"
-    ):
+    with st.expander("Ver JSON completo"):
         st.json(result)
 PY
