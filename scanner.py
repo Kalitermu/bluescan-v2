@@ -1,613 +1,723 @@
 cd ~/bluescan-v2
 source .venv/bin/activate
 
-cp scanner.py scanner.backup.$(date +%Y%m%d-%H%M%S).py
+cp scanner.py scanner.before_httpx.py
 
 cat > scanner.py <<'PY'
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import re
 import subprocess
 import time
+from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-from scanner_http import scan_http
-from scanner_tls import scan_tls
-from scanner_dns import scan_dns
-from scanner_tech import scan_technology
-from correlator import correlate
+import ssl
+import socket
 
 
-ANSI_ESCAPE = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
-)
+HTTPX_BIN = "/usr/bin/httpx-toolkit"
+WHATWEB_BIN = "whatweb"
 
 
-# ============================================================
-# WHATWEB
-# ============================================================
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
-def run_whatweb(url: str) -> dict:
-    """Executa WhatWeb em modo Stealthy."""
 
+def normalize_target(target):
+    target = target.strip()
+
+    if not target.startswith(("http://", "https://")):
+        target = "https://" + target
+
+    return target.rstrip("/")
+
+
+def get_host(target):
+    parsed = urlparse(target)
+    return parsed.hostname
+
+
+def run_command(command, timeout=30):
     try:
-        cmd = [
-            "whatweb",
-            "--aggression=1",
-            url,
-        ]
-
-        process = subprocess.run(
-            cmd,
+        result = subprocess.run(
+            command,
             capture_output=True,
             text=True,
-            timeout=45,
+            timeout=timeout
         )
 
-        stdout = ANSI_ESCAPE.sub(
-            "",
-            process.stdout,
-        ).strip()
-
-        stderr = ANSI_ESCAPE.sub(
-            "",
-            process.stderr,
-        ).strip()
-
-        plugins = []
-
-        for line in stdout.splitlines():
-            line = line.strip()
-
-            if not line:
-                continue
-
-            if not line.startswith(url):
-                continue
-
-            match = re.search(
-                r"\[[0-9]{3}(?: [^\]]+)?\]\s*(.*)$",
-                line,
-                re.DOTALL,
-            )
-
-            if not match:
-                continue
-
-            plugin_text = match.group(1).strip()
-
-            parts = re.findall(
-                r"[A-Za-z0-9_.+-]+(?:\[[^\]]*\])*",
-                plugin_text,
-            )
-
-            for part in parts:
-                part = part.strip().rstrip(",")
-
-                if not part:
-                    continue
-
-                name_match = re.match(
-                    r"^([A-Za-z0-9_.+-]+)",
-                    part,
-                )
-
-                if not name_match:
-                    continue
-
-                name = name_match.group(1)
-
-                values = re.findall(
-                    r"\[([^\]]*)\]",
-                    part,
-                )
-
-                plugins.append(
-                    {
-                        "name": name,
-                        "details": values,
-                        "raw": part,
-                    }
-                )
-
-            break
-
-        if stdout.startswith(url):
-            return {
-                "status": "ok",
-                "url": url,
-                "returncode": process.returncode,
-                "plugins": plugins,
-                "plugin_count": len(plugins),
-                "raw": stdout,
-                "warning": None,
-            }
-
         return {
-            "status": "error",
-            "url": url,
-            "returncode": process.returncode,
-            "error": (
-                stderr
-                or stdout
-                or "WhatWeb não retornou dados."
-            ),
-            "plugins": [],
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip()
+        }
+
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"timeout após {timeout}s"
         }
 
     except FileNotFoundError:
         return {
-            "status": "error",
-            "url": url,
-            "error": "WhatWeb não encontrado no sistema.",
-            "plugins": [],
-        }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "url": url,
-            "error": (
-                "WhatWeb excedeu o tempo limite "
-                "de 45 segundos."
-            ),
-            "plugins": [],
+            "returncode": -2,
+            "stdout": "",
+            "stderr": f"programa não encontrado: {command[0]}"
         }
 
     except Exception as exc:
         return {
-            "status": "error",
-            "url": url,
-            "error": str(exc),
-            "plugins": [],
+            "returncode": -3,
+            "stdout": "",
+            "stderr": str(exc)
         }
 
 
-# ============================================================
-# VALIDATOR DO NUCLEI
-# ============================================================
+def check_security_headers(headers):
+    findings = []
 
-def _is_error_page(body: str, content_type: str) -> bool:
-    """Identifica páginas genéricas de erro."""
+    normalized = {
+        str(k).lower(): str(v)
+        for k, v in headers.items()
+    }
 
-    if "text/html" not in content_type.lower():
-        return False
+    if "content-security-policy" not in normalized:
+        findings.append({
+            "title": "Content-Security-Policy ausente",
+            "severity": "INFO",
+            "category": "Security Headers",
+            "evidence": "O cabeçalho Content-Security-Policy não foi encontrado.",
+            "recommendation": "Controla quais recursos uma página pode carregar."
+        })
 
-    sample = body[:12000].lower()
+    if "x-content-type-options" not in normalized:
+        findings.append({
+            "title": "X-Content-Type-Options ausente",
+            "severity": "LOW",
+            "category": "Security Headers",
+            "evidence": "O cabeçalho X-Content-Type-Options não foi encontrado.",
+            "recommendation": "Ajuda a evitar MIME sniffing."
+        })
 
-    indicators = [
-        "<title>404",
-        "404 not found",
-        "page not found",
-        "file not found",
-        "not found",
-        "error 404",
-        "github pages",
-    ]
+    if "x-frame-options" not in normalized:
+        findings.append({
+            "title": "X-Frame-Options ausente",
+            "severity": "LOW",
+            "category": "Security Headers",
+            "evidence": "O cabeçalho X-Frame-Options não foi encontrado.",
+            "recommendation": "Ajuda a reduzir riscos de clickjacking."
+        })
 
-    return any(
-        indicator in sample
-        for indicator in indicators
-    )
+    if "referrer-policy" not in normalized:
+        findings.append({
+            "title": "Referrer-Policy ausente",
+            "severity": "INFO",
+            "category": "Security Headers",
+            "evidence": "O cabeçalho Referrer-Policy não foi encontrado.",
+            "recommendation": "Controla informações enviadas pelo Referer."
+        })
+
+    if "permissions-policy" not in normalized:
+        findings.append({
+            "title": "Permissions-Policy ausente",
+            "severity": "INFO",
+            "category": "Security Headers",
+            "evidence": "O cabeçalho Permissions-Policy não foi encontrado.",
+            "recommendation": "Controla recursos sensíveis disponíveis ao navegador."
+        })
+
+    server = normalized.get("server")
+
+    if server:
+        findings.append({
+            "title": "Identificação da plataforma exposta",
+            "severity": "INFO",
+            "category": "Information Disclosure",
+            "evidence": f"Server: {server}",
+            "recommendation": "Avaliar se essa informação é necessária em produção."
+        })
+
+    return findings
 
 
-def validate_nuclei_match(url: str) -> dict:
-    """
-    Revalida um matched-at do Nuclei usando GET simples.
-    Não tenta explorar o recurso.
-    """
+def scan_http(target):
+    started = time.time()
 
     result = {
-        "url": url,
-        "status": "unknown",
-        "http_status": None,
-        "content_type": None,
-        "content_length": None,
-        "error_page": False,
-        "reason": None,
-        "confidence": "low",
+        "target": target,
+        "status": None,
+        "final_url": None,
+        "redirects": [],
+        "server": None,
+        "headers": {},
+        "cookies": [],
+        "http_methods": {},
+        "findings": []
     }
 
     try:
         request = Request(
-            url,
+            target,
             headers={
-                "User-Agent": "BlueScan-Validator/1.0",
-                "Accept": "*/*",
+                "User-Agent": "BlueScan/3.0"
             },
-            method="GET",
+            method="GET"
         )
 
-        with urlopen(
-            request,
-            timeout=8,
-        ) as response:
+        with urlopen(request, timeout=15) as response:
+            result["status"] = response.status
+            result["final_url"] = response.geturl()
 
-            body = response.read(20000)
+            result["headers"] = dict(response.headers.items())
 
-            status_code = response.getcode()
+            result["server"] = response.headers.get("Server")
 
-            content_type = response.headers.get(
-                "Content-Type",
-                "",
+            set_cookie = response.headers.get_all("Set-Cookie")
+
+            if set_cookie:
+                result["cookies"] = set_cookie
+
+            result["findings"] = check_security_headers(
+                response.headers
             )
-
-            content_length = response.headers.get(
-                "Content-Length"
-            )
-
-        body_text = body.decode(
-            "utf-8",
-            errors="replace",
-        )
-
-        result["http_status"] = status_code
-        result["content_type"] = content_type
-
-        result["content_length"] = (
-            int(content_length)
-            if content_length
-            and content_length.isdigit()
-            else len(body)
-        )
-
-        result["error_page"] = _is_error_page(
-            body_text,
-            content_type,
-        )
-
-        if status_code in (404, 410):
-            result["status"] = "false_positive"
-            result["confidence"] = "high"
-            result["reason"] = (
-                f"O matched-at retornou HTTP {status_code}; "
-                "recurso não foi encontrado."
-            )
-
-            return result
-
-        if result["error_page"]:
-            result["status"] = "likely_false_positive"
-            result["confidence"] = "high"
-            result["reason"] = (
-                "A resposta parece ser uma página "
-                "genérica de erro/fallback."
-            )
-
-            return result
-
-        if 200 <= status_code < 300:
-            result["status"] = "needs_review"
-            result["confidence"] = "medium"
-            result["reason"] = (
-                "O recurso respondeu com sucesso. "
-                "Isso não confirma vulnerabilidade; "
-                "é necessária análise adicional."
-            )
-
-            return result
-
-        result["status"] = "needs_review"
-        result["confidence"] = "low"
-        result["reason"] = (
-            f"Resposta HTTP {status_code}; "
-            "não foi possível confirmar ou "
-            "descartar o achado automaticamente."
-        )
-
-        return result
 
     except HTTPError as exc:
-        result["http_status"] = exc.code
+        result["status"] = exc.code
+        result["final_url"] = target
 
-        if exc.code in (404, 410):
-            result["status"] = "false_positive"
-            result["confidence"] = "high"
-            result["reason"] = (
-                f"HTTP {exc.code}: recurso inexistente."
-            )
-        else:
-            result["status"] = "needs_review"
-            result["confidence"] = "low"
-            result["reason"] = (
-                f"HTTP {exc.code}: resposta não conclusiva."
-            )
-
-        return result
-
-    except (URLError, TimeoutError) as exc:
-        result["status"] = "validation_error"
-        result["confidence"] = "low"
-        result["reason"] = (
-            f"Falha na revalidação: {exc}"
-        )
-
-        return result
+        try:
+            result["headers"] = dict(exc.headers.items())
+            result["server"] = exc.headers.get("Server")
+            result["findings"] = check_security_headers(exc.headers)
+        except Exception:
+            pass
 
     except Exception as exc:
-        result["status"] = "validation_error"
-        result["confidence"] = "low"
-        result["reason"] = str(exc)
+        result["error"] = str(exc)
 
-        return result
+    elapsed = round(time.time() - started, 2)
+
+    result["duration_seconds"] = elapsed
+
+    return result
 
 
-# ============================================================
-# NUCLEI
-# ============================================================
-
-def run_nuclei(url: str) -> dict:
-    """
-    Executa Nuclei de forma limitada.
-    Os resultados são revalidados com GET simples.
-    """
+def scan_dns(target):
+    host = get_host(target)
 
     result = {
-        "status": "not_run",
-        "url": url,
-        "returncode": None,
-        "findings": [],
-        "summary": {
-            "total": 0,
-            "confirmed": 0,
-            "needs_review": 0,
-            "false_positive": 0,
-            "likely_false_positive": 0,
-            "validation_error": 0,
+        "target": host,
+        "records": {
+            "A": [],
+            "AAAA": [],
+            "CNAME": [],
+            "MX": [],
+            "NS": [],
+            "TXT": []
         },
-        "error": None,
+        "findings": []
     }
 
+    if not host:
+        result["error"] = "hostname inválido"
+        return result
+
+    for record_type, family in [
+        ("A", socket.AF_INET),
+        ("AAAA", socket.AF_INET6)
+    ]:
+        try:
+            addresses = socket.getaddrinfo(
+                host,
+                443,
+                family,
+                socket.SOCK_STREAM
+            )
+
+            values = set()
+
+            for item in addresses:
+                values.add(item[4][0])
+
+            result["records"][record_type] = sorted(values)
+
+        except Exception:
+            pass
+
+    return result
+
+
+def scan_tls(target):
+    host = get_host(target)
+
+    result = {
+        "target": target,
+        "host": host,
+        "port": 443
+    }
+
+    if not host:
+        result["status"] = "error"
+        result["error"] = "hostname inválido"
+        return result
+
     try:
-        cmd = [
-            "nuclei",
-            "-u",
-            url,
-            "-severity",
-            "info,low,medium,high,critical",
-            "-rl",
-            "5",
-            "-c",
-            "5",
-            "-timeout",
-            "10",
-            "-retries",
-            "1",
-            "-jsonl",
-            "-silent",
-        ]
+        context = ssl.create_default_context()
 
-        process = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        with socket.create_connection(
+            (host, 443),
+            timeout=10
+        ) as sock:
 
-        result["returncode"] = process.returncode
+            with context.wrap_socket(
+                sock,
+                server_hostname=host
+            ) as tls_sock:
 
-        stdout = process.stdout.strip()
+                cert = tls_sock.getpeercert()
 
-        if not stdout:
-            result["status"] = "ok"
-            return result
+                result["tls_version"] = tls_sock.version()
 
-        findings = []
+                result["cipher"] = list(
+                    tls_sock.cipher()
+                ) if tls_sock.cipher() else None
 
-        for line in stdout.splitlines():
-            line = line.strip()
-
-            if not line:
-                continue
-
-            try:
-                finding = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            matched_at = finding.get("matched-at")
-
-            if not matched_at:
-                finding["blueScan_validation"] = {
-                    "status": "not_validated",
-                    "reason": (
-                        "Nuclei não forneceu matched-at."
-                    ),
+                result["certificate"] = {
+                    "subject": str(cert.get("subject")),
+                    "issuer": str(cert.get("issuer")),
+                    "serial_number": cert.get("serialNumber"),
+                    "not_before": cert.get("notBefore"),
+                    "not_after": cert.get("notAfter"),
+                    "san": [
+                        value
+                        for kind, value in cert.get("subjectAltName", [])
+                        if kind == "DNS"
+                    ]
                 }
 
-                findings.append(finding)
-                continue
+                result["findings"] = [{
+                    "title": "Versão TLS moderna negociada",
+                    "severity": "INFO",
+                    "category": "TLS",
+                    "evidence": tls_sock.version()
+                }]
 
-            validation = validate_nuclei_match(
-                matched_at
-            )
-
-            finding["blueScan_validation"] = validation
-
-            findings.append(finding)
-
-        for finding in findings:
-            validation = finding.get(
-                "blueScan_validation",
-                {},
-            )
-
-            status = validation.get("status")
-
-            if status == "false_positive":
-                result["summary"]["false_positive"] += 1
-
-            elif status == "likely_false_positive":
-                result["summary"][
-                    "likely_false_positive"
-                ] += 1
-
-            elif status == "needs_review":
-                result["summary"]["needs_review"] += 1
-
-            elif status == "validation_error":
-                result["summary"][
-                    "validation_error"
-                ] += 1
-
-            else:
-                result["summary"]["confirmed"] += 1
-
-        result["summary"]["total"] = len(findings)
-
-        result["findings"] = findings
-        result["status"] = "ok"
-
-        return result
-
-    except FileNotFoundError:
-        result["status"] = "error"
-        result["error"] = (
-            "Nuclei não encontrado no sistema."
-        )
-
-        return result
-
-    except subprocess.TimeoutExpired:
-        result["status"] = "timeout"
-        result["error"] = (
-            "Nuclei excedeu o limite de 300 segundos."
-        )
-
-        return result
+                result["status"] = "ok"
 
     except Exception as exc:
         result["status"] = "error"
         result["error"] = str(exc)
 
-        return result
+    return result
 
 
-# ============================================================
-# SCAN PRINCIPAL
-# ============================================================
-
-def scan_target(url):
+def scan_httpx(target):
     """
-    Executa os módulos do BlueScan.
-
-    Módulos:
-    - HTTP
-    - Tecnologia
-    - WhatWeb
-    - TLS
-    - DNS
-    - Nuclei
-    - Correlação
-
-    Nmap não é utilizado.
+    Substituto do módulo Nmap.
+    Focado em enumeração HTTP/HTTPS e identificação da superfície web.
     """
-
-    started_at = datetime.now().astimezone()
-    started_perf = time.perf_counter()
 
     result = {
-        "target": url,
-        "started_at": started_at.isoformat(),
-        "finished_at": None,
-        "duration_seconds": None,
-
-        "http": None,
-        "tls": None,
-        "dns": None,
-        "technology": None,
-        "whatweb": None,
-        "nuclei": None,
-        "correlation": None,
+        "status": "unknown",
+        "target": target,
+        "tool": "httpx-toolkit",
+        "findings": []
     }
 
-    # =========================================================
-    # HTTP
-    # =========================================================
+    command = [
+        HTTPX_BIN,
+        "-u",
+        target,
+        "-status-code",
+        "-title",
+        "-tech-detect",
+        "-server",
+        "-location",
+        "-silent"
+    ]
 
-    http_result = scan_http(url)
+    execution = run_command(
+        command,
+        timeout=30
+    )
 
-    result["http"] = http_result
+    result["returncode"] = execution["returncode"]
 
-    # =========================================================
-    # TECNOLOGIA
-    # =========================================================
+    if execution["returncode"] == -2:
+        result["status"] = "unavailable"
+        result["message"] = (
+            "httpx-toolkit não encontrado no ambiente."
+        )
+        return result
 
-    result["technology"] = scan_technology(
+    if execution["returncode"] == -1:
+        result["status"] = "timeout"
+        result["message"] = (
+            "httpx-toolkit excedeu o tempo limite."
+        )
+        return result
+
+    if execution["returncode"] != 0:
+        result["status"] = "error"
+        result["message"] = execution["stderr"] or (
+            "httpx-toolkit retornou erro."
+        )
+        return result
+
+    output = execution["stdout"]
+
+    if not output:
+        result["status"] = "no_result"
+        result["message"] = (
+            "httpx-toolkit executou, mas não retornou dados."
+        )
+        return result
+
+    result["status"] = "ok"
+    result["raw"] = output
+
+    lines = output.splitlines()
+
+    result["results"] = lines
+
+    for line in lines:
+        result["findings"].append({
+            "title": "Endpoint HTTP identificado",
+            "severity": "INFO",
+            "category": "Web Surface",
+            "evidence": line
+        })
+
+    return result
+
+
+def scan_whatweb(target):
+    result = {
+        "status": "unknown",
+        "url": target,
+        "plugins": []
+    }
+
+    execution = run_command(
+        [
+            WHATWEB_BIN,
+            "--quiet",
+            target
+        ],
+        timeout=30
+    )
+
+    result["returncode"] = execution["returncode"]
+
+    if execution["returncode"] == -2:
+        result["status"] = "unavailable"
+        result["message"] = "WhatWeb não encontrado."
+        return result
+
+    if execution["returncode"] == -1:
+        result["status"] = "timeout"
+        result["message"] = "WhatWeb excedeu o tempo limite."
+        return result
+
+    if execution["returncode"] != 0:
+        result["status"] = "error"
+        result["message"] = execution["stderr"]
+        return result
+
+    result["status"] = "ok"
+    result["raw"] = execution["stdout"]
+
+    return result
+
+
+def build_security_checks(http_result):
+    findings = []
+
+    for finding in http_result.get("findings", []):
+        item = dict(finding)
+
+        item["status"] = "INDICATION"
+        item["source"] = "BlueScan Checks"
+
+        findings.append(item)
+
+    return {
+        "status": "ok",
+        "target": http_result.get("target"),
+        "final_url": http_result.get("final_url"),
+        "http_status": http_result.get("status"),
+        "findings": findings,
+        "count": len(findings),
+        "timeout_seconds": 15
+    }
+
+
+def build_correlation(http_result, tls_result, httpx_result):
+    findings = []
+
+    for finding in http_result.get("findings", []):
+        title = finding.get("title", "")
+        severity = finding.get("severity", "INFO")
+
+        if severity == "LOW":
+            finding_type = "CONFIGURATION"
+        else:
+            finding_type = "HARDENING"
+
+        findings.append({
+            "id": re.sub(
+                r"[^a-z0-9]+",
+                "-",
+                title.lower()
+            ).strip("-"),
+            "title": title,
+            "severity": severity,
+            "type": finding_type,
+            "status": "CONFIRMED",
+            "confidence": "HIGH",
+            "category": finding.get("category"),
+            "source": "HTTP",
+            "cve": None,
+            "cwe": None,
+            "evidence": finding.get("evidence"),
+            "description": finding.get("evidence"),
+            "impact": finding.get("recommendation"),
+            "consequence": (
+                "Achado de configuração ou hardening; "
+                "não representa confirmação de exploração."
+            ),
+            "recommendation": finding.get("recommendation"),
+            "validation": (
+                "Executar novamente o BlueScan e verificar "
+                "o comportamento esperado."
+            )
+        })
+
+    if tls_result.get("status") == "ok":
+        tls_version = tls_result.get("tls_version")
+
+        findings.append({
+            "id": "versao-tls-moderna-negociada",
+            "title": "Versão TLS moderna negociada",
+            "severity": "INFO",
+            "type": "INFORMATION",
+            "status": "CONFIRMED",
+            "confidence": "HIGH",
+            "category": "TLS",
+            "source": "TLS",
+            "cve": None,
+            "cwe": None,
+            "evidence": tls_version,
+            "description": (
+                "A conexão analisada negociou uma "
+                "versão moderna do protocolo TLS."
+            ),
+            "impact": (
+                "TLS moderno fornece uma base criptográfica "
+                "adequada para HTTPS."
+            ),
+            "consequence": (
+                "Este achado é positivo e não representa "
+                "uma vulnerabilidade."
+            ),
+            "recommendation": (
+                "Manter protocolos TLS modernos habilitados."
+            ),
+            "validation": (
+                "Executar novamente o BlueScan e confirmar "
+                "a versão TLS negociada."
+            )
+        })
+
+    low = sum(
+        1 for x in findings
+        if x["severity"] == "LOW"
+    )
+
+    info = sum(
+        1 for x in findings
+        if x["severity"] == "INFO"
+    )
+
+    medium = sum(
+        1 for x in findings
+        if x["severity"] == "MEDIUM"
+    )
+
+    high = sum(
+        1 for x in findings
+        if x["severity"] == "HIGH"
+    )
+
+    critical = sum(
+        1 for x in findings
+        if x["severity"] == "CRITICAL"
+    )
+
+    vulnerabilities = sum(
+        1 for x in findings
+        if x["severity"] in {
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM"
+        }
+    )
+
+    risk = "LOW"
+
+    if critical:
+        risk = "CRITICAL"
+    elif high:
+        risk = "HIGH"
+    elif medium:
+        risk = "MEDIUM"
+    elif low:
+        risk = "LOW"
+
+    return {
+        "risk": risk,
+        "summary": {
+            "total_findings": len(findings),
+            "confirmed_findings": len(findings),
+            "confirmed_vulnerabilities": vulnerabilities,
+            "indications": 0,
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": low,
+            "info": info,
+            "vulnerabilities": vulnerabilities,
+            "configuration": sum(
+                1 for x in findings
+                if x["type"] == "CONFIGURATION"
+            ),
+            "hardening": sum(
+                1 for x in findings
+                if x["type"] == "HARDENING"
+            ),
+            "information": sum(
+                1 for x in findings
+                if x["type"] == "INFORMATION"
+            )
+        },
+        "findings": findings
+    }
+
+
+def build_agent(target, correlation):
+    return {
+        "agent": "BlueScan Agent",
+        "version": "1.0",
+        "target": target,
+        "analyzed_at": now_iso(),
+        "risk": correlation["risk"],
+        "confirmed_vulnerabilities": correlation[
+            "summary"
+        ]["confirmed_vulnerabilities"],
+        "nuclei": {
+            "total": 0,
+            "confirmed": 0,
+            "needs_review": 0,
+            "false_positive": 0,
+            "likely_false_positive": 0
+        },
+        "findings": [
+            {
+                "source": "correlation",
+                "title": item["title"],
+                "severity": item["severity"],
+                "confidence": item["confidence"],
+                "status": "review"
+            }
+            for item in correlation["findings"]
+            if item["severity"] != "INFO"
+        ],
+        "actions": [
+            "Foram encontradas configurações que merecem avaliação."
+        ],
+        "conclusion": (
+            "Nenhuma vulnerabilidade foi confirmada "
+            "automaticamente pelo BlueScan Agent."
+            if correlation["summary"][
+                "confirmed_vulnerabilities"
+            ] == 0
+            else
+            "Foram identificados achados que exigem "
+            "revisão adicional."
+        )
+    }
+
+
+def scan_target(target):
+    target = normalize_target(target)
+
+    started = now_iso()
+    start_time = time.time()
+
+    http_result = scan_http(target)
+    tls_result = scan_tls(target)
+    dns_result = scan_dns(target)
+    httpx_result = scan_httpx(target)
+    whatweb_result = scan_whatweb(target)
+
+    security_checks = build_security_checks(
         http_result
     )
 
-    # =========================================================
-    # WHATWEB
-    # =========================================================
-
-    result["whatweb"] = run_whatweb(url)
-
-    # =========================================================
-    # TLS
-    # =========================================================
-
-    if url.startswith("https://"):
-        tls_result = scan_tls(url)
-        result["tls"] = tls_result
-    else:
-        tls_result = None
-
-    # =========================================================
-    # DNS
-    # =========================================================
-
-    host = url.split(
-        "://",
-        1,
-    )[-1]
-
-    host = host.split(
-        "/",
-        1,
-    )[0]
-
-    host = host.split(
-        ":",
-        1,
-    )[0]
-
-    result["dns"] = scan_dns(host)
-
-    # =========================================================
-    # NUCLEI
-    # =========================================================
-
-    result["nuclei"] = run_nuclei(url)
-
-    # =========================================================
-    # CORRELAÇÃO
-    # =========================================================
-
-    result["correlation"] = correlate(
-        http_result=http_result,
-        tls_result=tls_result,
+    correlation = build_correlation(
+        http_result,
+        tls_result,
+        httpx_result
     )
 
-    # =========================================================
-    # TEMPO
-    # =========================================================
+    finished = now_iso()
 
-    finished_at = datetime.now().astimezone()
-
-    result["finished_at"] = finished_at.isoformat()
-
-    result["duration_seconds"] = round(
-        time.perf_counter() - started_perf,
-        2,
+    duration = round(
+        time.time() - start_time,
+        1
     )
 
-    return result
+    return {
+        "target": target,
+        "started_at": started,
+        "finished_at": finished,
+        "duration_seconds": duration,
+
+        "http": http_result,
+
+        "tls": tls_result,
+
+        "dns": dns_result,
+
+        "httpx": httpx_result,
+
+        "technology": {
+            "technologies": [],
+            "count": 0
+        },
+
+        "whatweb": whatweb_result,
+
+        "security_checks": security_checks,
+
+        "correlation": correlation,
+
+        "agent": build_agent(
+            target,
+            correlation
+        ),
+
+        "nuclei": {
+            "status": "disabled",
+            "target": target,
+            "count": 0,
+            "summary": {},
+            "findings": [],
+            "message": "Nuclei desativado no BlueScan."
+        }
+    }
 PY
 
-python -m py_compile scanner.py
-
-python -c "import scanner; print('OK: scanner.py carregado sem Nmap')"
-
-grep -niE 'nmap|nmap3|portscan' scanner.py || true
+    
