@@ -1,28 +1,121 @@
-(
-          cd ~/bluescan-v2
+cd ~/bluescan-v2
 source .venv/bin/activate
 
 cat > scanner_nuclei.py <<'PY'
 import json
+import os
 import subprocess
+import tempfile
 
 
-SAFE_TAGS = "ssl,misconfig"
+SAFE_TAGS = "misconfig,exposure,ssl,tech"
+NUCLEI_TIMEOUT = 120
 
-NUCLEI_TIMEOUT = 15
+
+def _read_findings(temp_path: str, url: str) -> list:
+    findings = []
+
+    if not temp_path or not os.path.exists(temp_path):
+        return findings
+
+    try:
+        with open(
+            temp_path,
+            "r",
+            encoding="utf-8",
+            errors="replace",
+        ) as file:
+
+            for line in file:
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                info = item.get("info", {})
+
+                if not isinstance(info, dict):
+                    info = {}
+
+                classification = info.get(
+                    "classification",
+                    {},
+                )
+
+                if not isinstance(classification, dict):
+                    classification = {}
+
+                findings.append({
+                    "template_id": item.get(
+                        "template-id",
+                        item.get("template_id", ""),
+                    ),
+                    "name": info.get(
+                        "name",
+                        "Achado Nuclei",
+                    ),
+                    "severity": str(
+                        info.get(
+                            "severity",
+                            "info",
+                        )
+                    ).upper(),
+                    "status": "INDICATION",
+                    "source": "Nuclei",
+                    "matched_at": item.get(
+                        "matched-at",
+                        url,
+                    ),
+                    "type": info.get(
+                        "type",
+                        "",
+                    ),
+                    "description": info.get(
+                        "description",
+                        "",
+                    ),
+                    "reference": info.get(
+                        "reference",
+                        [],
+                    ),
+                    "cve": classification.get(
+                        "cve-id",
+                        [],
+                    ),
+                    "cwe": classification.get(
+                        "cwe-id",
+                        [],
+                    ),
+                    "evidence": item.get(
+                        "extracted-results",
+                        [],
+                    ),
+                })
+
+    except OSError:
+        pass
+
+    return findings
 
 
 def scan_nuclei(url: str) -> dict:
     """
-    Executa Nuclei de forma controlada.
+    Executa Nuclei em modo controlado.
 
-    O Nuclei é opcional no BlueScan.
-    Se não terminar dentro do limite, o módulo retorna
-    TIMEOUT e o restante do scanner continua normalmente.
+    Categorias utilizadas:
+    - misconfiguração
+    - exposição
+    - SSL/TLS
+    - identificação tecnológica
 
-    Resultados do Nuclei são tratados como INDICATION.
-    Eles não são classificados automaticamente como
-    vulnerabilidades confirmadas.
+    Os resultados são tratados como INDICAÇÃO
+    e precisam de validação antes de serem
+    considerados vulnerabilidades confirmadas.
     """
 
     if not isinstance(url, str) or not url.strip():
@@ -35,122 +128,96 @@ def scan_nuclei(url: str) -> dict:
         }
 
     url = url.strip()
-
-    cmd = [
-        "nuclei",
-        "-u",
-        url,
-        "-tags",
-        SAFE_TAGS,
-        "-rl",
-        "1",
-        "-c",
-        "1",
-        "-timeout",
-        "3",
-        "-retries",
-        "0",
-        "-silent",
-    ]
+    temp_path = None
 
     try:
-        process = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=NUCLEI_TIMEOUT,
+        fd, temp_path = tempfile.mkstemp(
+            prefix="bluescan-nuclei-",
+            suffix=".jsonl",
         )
 
-        stdout = process.stdout or ""
-        stderr = process.stderr or ""
+        os.close(fd)
 
-        findings = []
+        cmd = [
+            "nuclei",
+            "-u",
+            url,
+            "-tags",
+            SAFE_TAGS,
+            "-rl",
+            "3",
+            "-c",
+            "2",
+            "-timeout",
+            "10",
+            "-retries",
+            "0",
+            "-jsonl-export",
+            temp_path,
+            "-silent",
+        ]
 
-        for line in stdout.splitlines():
-
-            line = line.strip()
-
-            if not line:
-                continue
-
-            # Nuclei pode retornar JSONL quando configurado
-            # para JSON. Se a linha não for JSON, ignoramos.
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if not isinstance(item, dict):
-                continue
-
-            info = item.get("info", {})
-
-            if not isinstance(info, dict):
-                info = {}
-
-            classification = info.get(
-                "classification",
-                {},
+        try:
+            process = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=NUCLEI_TIMEOUT,
             )
 
-            if not isinstance(classification, dict):
-                classification = {}
+        except subprocess.TimeoutExpired as exc:
+            findings = _read_findings(
+                temp_path,
+                url,
+            )
 
-            severity = str(
-                info.get(
-                    "severity",
-                    "info",
-                )
-            ).upper()
+            stderr = ""
 
-            findings.append({
-                "template_id": item.get(
-                    "template-id",
-                    item.get("template_id", ""),
+            if exc.stderr:
+                stderr = str(exc.stderr).strip()
+
+            return {
+                "status": "timeout",
+                "target": url,
+                "tags": SAFE_TAGS.split(","),
+                "findings": findings,
+                "count": len(findings),
+                "returncode": None,
+                "timeout_seconds": NUCLEI_TIMEOUT,
+                "partial": bool(findings),
+                "error": (
+                    "Nuclei não concluiu dentro "
+                    f"de {NUCLEI_TIMEOUT} segundos."
                 ),
-                "name": info.get(
-                    "name",
-                    "Achado Nuclei",
+                "warning": stderr or None,
+            }
+
+        findings = _read_findings(
+            temp_path,
+            url,
+        )
+
+        stderr = (
+            process.stderr.strip()
+            if process.stderr
+            else ""
+        )
+
+        if process.returncode != 0:
+            return {
+                "status": "error",
+                "target": url,
+                "tags": SAFE_TAGS.split(","),
+                "findings": findings,
+                "count": len(findings),
+                "returncode": process.returncode,
+                "error": (
+                    "Nuclei terminou com código "
+                    f"{process.returncode}."
                 ),
-                "severity": severity,
-                "status": "INDICATION",
-                "source": "Nuclei",
-                "category": "SECURITY_SCAN",
-                "matched_at": item.get(
-                    "matched-at",
-                    url,
-                ),
-                "type": info.get(
-                    "type",
-                    "",
-                ),
-                "description": info.get(
-                    "description",
-                    "",
-                ),
-                "reference": info.get(
-                    "reference",
-                    [],
-                ),
-                "cve": classification.get(
-                    "cve-id",
-                    [],
-                ),
-                "cwe": classification.get(
-                    "cwe-id",
-                    [],
-                ),
-                "evidence": item.get(
-                    "extracted-results",
-                    [],
-                ),
-                "validation": (
-                    "Indicação automatizada. "
-                    "Validar manualmente antes de "
-                    "classificar como vulnerabilidade confirmada."
-                ),
-            })
+                "warning": stderr or None,
+            }
 
         return {
             "status": "ok",
@@ -159,44 +226,34 @@ def scan_nuclei(url: str) -> dict:
             "findings": findings,
             "count": len(findings),
             "returncode": process.returncode,
-            "warning": stderr.strip() or None,
-            "timeout_seconds": NUCLEI_TIMEOUT,
+            "warning": stderr or None,
         }
 
     except FileNotFoundError:
-
         return {
             "status": "error",
             "target": url,
             "findings": [],
             "count": 0,
-            "error": "Nuclei não encontrado no sistema.",
-            "timeout_seconds": NUCLEI_TIMEOUT,
-        }
-
-    except subprocess.TimeoutExpired:
-
-        return {
-            "status": "timeout",
-            "target": url,
-            "findings": [],
-            "count": 0,
             "error": (
-                "Nuclei não concluiu dentro de "
-                f"{NUCLEI_TIMEOUT} segundos. "
-                "O restante do BlueScan pode continuar."
+                "Nuclei não encontrado no sistema."
             ),
-            "timeout_seconds": NUCLEI_TIMEOUT,
         }
 
     except Exception as exc:
-
         return {
             "status": "error",
             "target": url,
             "findings": [],
             "count": 0,
             "error": str(exc),
-            "timeout_seconds": NUCLEI_TIMEOUT,
         }
-PY                  
+
+    finally:
+        if temp_path:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+PY
