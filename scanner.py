@@ -1,7 +1,7 @@
 cd ~/bluescan-v2
 source .venv/bin/activate
 
-cp scanner.py scanner.before_nuclei_validator.py
+cp scanner.py scanner.backup.$(date +%Y%m%d-%H%M%S).py
 
 cat > scanner.py <<'PY'
 from datetime import datetime
@@ -29,9 +29,7 @@ ANSI_ESCAPE = re.compile(
 # ============================================================
 
 def run_whatweb(url: str) -> dict:
-    """
-    Executa WhatWeb em modo Stealthy (-a 1).
-    """
+    """Executa WhatWeb em modo Stealthy."""
 
     try:
         cmd = [
@@ -60,7 +58,6 @@ def run_whatweb(url: str) -> dict:
         plugins = []
 
         for line in stdout.splitlines():
-
             line = line.strip()
 
             if not line:
@@ -86,7 +83,6 @@ def run_whatweb(url: str) -> dict:
             )
 
             for part in parts:
-
                 part = part.strip().rstrip(",")
 
                 if not part:
@@ -118,7 +114,6 @@ def run_whatweb(url: str) -> dict:
             break
 
         if stdout.startswith(url):
-
             return {
                 "status": "ok",
                 "url": url,
@@ -142,7 +137,6 @@ def run_whatweb(url: str) -> dict:
         }
 
     except FileNotFoundError:
-
         return {
             "status": "error",
             "url": url,
@@ -151,7 +145,6 @@ def run_whatweb(url: str) -> dict:
         }
 
     except subprocess.TimeoutExpired:
-
         return {
             "status": "error",
             "url": url,
@@ -163,7 +156,6 @@ def run_whatweb(url: str) -> dict:
         }
 
     except Exception as exc:
-
         return {
             "status": "error",
             "url": url,
@@ -173,14 +165,11 @@ def run_whatweb(url: str) -> dict:
 
 
 # ============================================================
-# HTTP VALIDATOR DO NUCLEI
+# VALIDATOR DO NUCLEI
 # ============================================================
 
 def _is_error_page(body: str, content_type: str) -> bool:
-    """
-    Identifica respostas que parecem páginas genéricas de erro.
-    Não tenta explorar o alvo.
-    """
+    """Identifica páginas genéricas de erro."""
 
     if "text/html" not in content_type.lower():
         return False
@@ -205,10 +194,8 @@ def _is_error_page(body: str, content_type: str) -> bool:
 
 def validate_nuclei_match(url: str) -> dict:
     """
-    Revalida um matched-at do Nuclei usando uma requisição GET
-    simples e não destrutiva.
-
-    A função NÃO tenta explorar o recurso.
+    Revalida um matched-at do Nuclei usando GET simples.
+    Não tenta explorar o recurso.
     """
 
     result = {
@@ -223,7 +210,6 @@ def validate_nuclei_match(url: str) -> dict:
     }
 
     try:
-
         request = Request(
             url,
             headers={
@@ -238,17 +224,13 @@ def validate_nuclei_match(url: str) -> dict:
             timeout=8,
         ) as response:
 
-            body = response.read(
-                20000
-            )
+            body = response.read(20000)
 
             status_code = response.getcode()
 
-            content_type = (
-                response.headers.get(
-                    "Content-Type",
-                    "",
-                )
+            content_type = response.headers.get(
+                "Content-Type",
+                "",
             )
 
             content_length = response.headers.get(
@@ -262,6 +244,7 @@ def validate_nuclei_match(url: str) -> dict:
 
         result["http_status"] = status_code
         result["content_type"] = content_type
+
         result["content_length"] = (
             int(content_length)
             if content_length
@@ -274,43 +257,27 @@ def validate_nuclei_match(url: str) -> dict:
             content_type,
         )
 
-        # ----------------------------------------------------
-        # Recurso claramente inexistente
-        # ----------------------------------------------------
-
         if status_code in (404, 410):
-
             result["status"] = "false_positive"
             result["confidence"] = "high"
             result["reason"] = (
-                "O matched-at retornou "
-                f"HTTP {status_code}; recurso "
-                "não foi encontrado."
+                f"O matched-at retornou HTTP {status_code}; "
+                "recurso não foi encontrado."
             )
 
             return result
 
-        # ----------------------------------------------------
-        # Página de erro genérica
-        # ----------------------------------------------------
-
         if result["error_page"]:
-
             result["status"] = "likely_false_positive"
             result["confidence"] = "high"
             result["reason"] = (
-                "A resposta parece ser uma "
-                "página genérica de erro/fallback."
+                "A resposta parece ser uma página "
+                "genérica de erro/fallback."
             )
 
             return result
 
-        # ----------------------------------------------------
-        # Recurso existente
-        # ----------------------------------------------------
-
         if 200 <= status_code < 300:
-
             result["status"] = "needs_review"
             result["confidence"] = "medium"
             result["reason"] = (
@@ -320,10 +287,6 @@ def validate_nuclei_match(url: str) -> dict:
             )
 
             return result
-
-        # ----------------------------------------------------
-        # Outros códigos
-        # ----------------------------------------------------
 
         result["status"] = "needs_review"
         result["confidence"] = "low"
@@ -336,30 +299,24 @@ def validate_nuclei_match(url: str) -> dict:
         return result
 
     except HTTPError as exc:
-
         result["http_status"] = exc.code
 
         if exc.code in (404, 410):
-
             result["status"] = "false_positive"
             result["confidence"] = "high"
             result["reason"] = (
                 f"HTTP {exc.code}: recurso inexistente."
             )
-
         else:
-
             result["status"] = "needs_review"
             result["confidence"] = "low"
             result["reason"] = (
-                f"HTTP {exc.code}: resposta "
-                "não conclusiva."
+                f"HTTP {exc.code}: resposta não conclusiva."
             )
 
         return result
 
     except (URLError, TimeoutError) as exc:
-
         result["status"] = "validation_error"
         result["confidence"] = "low"
         result["reason"] = (
@@ -369,7 +326,6 @@ def validate_nuclei_match(url: str) -> dict:
         return result
 
     except Exception as exc:
-
         result["status"] = "validation_error"
         result["confidence"] = "low"
         result["reason"] = str(exc)
@@ -383,9 +339,8 @@ def validate_nuclei_match(url: str) -> dict:
 
 def run_nuclei(url: str) -> dict:
     """
-    Executa Nuclei de forma limitada e salva JSONL temporário.
-
-    Depois revalida automaticamente cada matched-at.
+    Executa Nuclei de forma limitada.
+    Os resultados são revalidados com GET simples.
     """
 
     result = {
@@ -405,7 +360,6 @@ def run_nuclei(url: str) -> dict:
     }
 
     try:
-
         cmd = [
             "nuclei",
             "-u",
@@ -431,22 +385,17 @@ def run_nuclei(url: str) -> dict:
             timeout=300,
         )
 
-        result["returncode"] = (
-            process.returncode
-        )
+        result["returncode"] = process.returncode
 
         stdout = process.stdout.strip()
 
         if not stdout:
-
             result["status"] = "ok"
-
             return result
 
         findings = []
 
         for line in stdout.splitlines():
-
             line = line.strip()
 
             if not line:
@@ -457,17 +406,13 @@ def run_nuclei(url: str) -> dict:
             except json.JSONDecodeError:
                 continue
 
-            matched_at = finding.get(
-                "matched-at"
-            )
+            matched_at = finding.get("matched-at")
 
             if not matched_at:
-
                 finding["blueScan_validation"] = {
                     "status": "not_validated",
                     "reason": (
-                        "Nuclei não forneceu "
-                        "matched-at."
+                        "Nuclei não forneceu matched-at."
                     ),
                 }
 
@@ -478,60 +423,38 @@ def run_nuclei(url: str) -> dict:
                 matched_at
             )
 
-            finding[
-                "blueScan_validation"
-            ] = validation
+            finding["blueScan_validation"] = validation
 
             findings.append(finding)
 
-        # ----------------------------------------------------
-        # Resumo
-        # ----------------------------------------------------
-
         for finding in findings:
-
             validation = finding.get(
                 "blueScan_validation",
                 {},
             )
 
-            status = validation.get(
-                "status"
-            )
+            status = validation.get("status")
 
             if status == "false_positive":
-
-                result["summary"][
-                    "false_positive"
-                ] += 1
+                result["summary"]["false_positive"] += 1
 
             elif status == "likely_false_positive":
-
                 result["summary"][
                     "likely_false_positive"
                 ] += 1
 
             elif status == "needs_review":
-
-                result["summary"][
-                    "needs_review"
-                ] += 1
+                result["summary"]["needs_review"] += 1
 
             elif status == "validation_error":
-
                 result["summary"][
                     "validation_error"
                 ] += 1
 
             else:
+                result["summary"]["confirmed"] += 1
 
-                result["summary"][
-                    "confirmed"
-                ] += 1
-
-        result["summary"]["total"] = len(
-            findings
-        )
+        result["summary"]["total"] = len(findings)
 
         result["findings"] = findings
         result["status"] = "ok"
@@ -539,7 +462,6 @@ def run_nuclei(url: str) -> dict:
         return result
 
     except FileNotFoundError:
-
         result["status"] = "error"
         result["error"] = (
             "Nuclei não encontrado no sistema."
@@ -548,17 +470,14 @@ def run_nuclei(url: str) -> dict:
         return result
 
     except subprocess.TimeoutExpired:
-
         result["status"] = "timeout"
         result["error"] = (
-            "Nuclei excedeu o limite de "
-            "300 segundos."
+            "Nuclei excedeu o limite de 300 segundos."
         )
 
         return result
 
     except Exception as exc:
-
         result["status"] = "error"
         result["error"] = str(exc)
 
@@ -571,7 +490,18 @@ def run_nuclei(url: str) -> dict:
 
 def scan_target(url):
     """
-    Executa todos os módulos do BlueScan.
+    Executa os módulos do BlueScan.
+
+    Módulos:
+    - HTTP
+    - Tecnologia
+    - WhatWeb
+    - TLS
+    - DNS
+    - Nuclei
+    - Correlação
+
+    Nmap não é utilizado.
     """
 
     started_at = datetime.now().astimezone()
@@ -619,13 +549,9 @@ def scan_target(url):
     # =========================================================
 
     if url.startswith("https://"):
-
         tls_result = scan_tls(url)
-
         result["tls"] = tls_result
-
     else:
-
         tls_result = None
 
     # =========================================================
@@ -650,7 +576,7 @@ def scan_target(url):
     result["dns"] = scan_dns(host)
 
     # =========================================================
-    # NUCLEI + PÓS-VALIDAÇÃO
+    # NUCLEI
     # =========================================================
 
     result["nuclei"] = run_nuclei(url)
@@ -670,9 +596,7 @@ def scan_target(url):
 
     finished_at = datetime.now().astimezone()
 
-    result["finished_at"] = (
-        finished_at.isoformat()
-    )
+    result["finished_at"] = finished_at.isoformat()
 
     result["duration_seconds"] = round(
         time.perf_counter() - started_perf,
@@ -681,3 +605,9 @@ def scan_target(url):
 
     return result
 PY
+
+python -m py_compile scanner.py
+
+python -c "import scanner; print('OK: scanner.py carregado sem Nmap')"
+
+grep -niE 'nmap|nmap3|portscan' scanner.py || true
