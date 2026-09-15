@@ -1,22 +1,6 @@
 cd ~/bluescan-v2
 
 cat > target_policy.py <<'PY'
-"""
-Política de validação de alvos do BlueScan.
-
-Permite:
-- localhost / loopback
-- IPs privados e de laboratório
-- domínios explicitamente autorizados
-- subdomínios de domínios autorizados
-
-Variável opcional:
-    BLUESCAN_ALLOWED_HOSTS
-
-Exemplo:
-    export BLUESCAN_ALLOWED_HOSTS="example.com,*.example.org"
-"""
-
 import ipaddress
 import os
 from urllib.parse import urlparse
@@ -26,21 +10,31 @@ ALLOWED_SCHEMES = {"http", "https"}
 
 
 def _allowed_hosts():
+    """
+    Retorna os hosts explicitamente autorizados
+    pela variável de ambiente BLUESCAN_ALLOWED_HOSTS.
+
+    Exemplo:
+
+        export BLUESCAN_ALLOWED_HOSTS="meusite.com,cliente.com,*.empresa.com"
+    """
     value = os.getenv("BLUESCAN_ALLOWED_HOSTS", "")
-    return {
-        item.strip().lower().rstrip(".")
-        for item in value.split(",")
-        if item.strip()
-    }
+
+    hosts = []
+
+    for item in value.split(","):
+        item = item.strip().lower().rstrip(".")
+
+        if item:
+            hosts.append(item)
+
+    return hosts
 
 
 def _is_private_or_local(host):
-    if host in {
-        "localhost",
-        "localhost.localdomain",
-    }:
-        return True
-
+    """
+    Permite somente endereços IP privados, locais ou link-local.
+    """
     try:
         ip = ipaddress.ip_address(host)
 
@@ -55,6 +49,17 @@ def _is_private_or_local(host):
 
 
 def _is_explicitly_allowed(host):
+    """
+    Verifica se o domínio foi explicitamente autorizado.
+
+    Aceita:
+
+        exemplo.com
+
+    ou:
+
+        *.exemplo.com
+    """
     host = host.lower().rstrip(".")
 
     for allowed in _allowed_hosts():
@@ -63,7 +68,7 @@ def _is_explicitly_allowed(host):
         if allowed == host:
             return True
 
-        # *.example.com
+        # Subdomínios explicitamente autorizados
         if allowed.startswith("*."):
             base = allowed[2:]
 
@@ -74,6 +79,14 @@ def _is_explicitly_allowed(host):
 
 
 def validate_target(url):
+    """
+    Valida um alvo antes de qualquer análise.
+
+    O BlueScan não libera arbitrariamente a internet:
+    o alvo precisa ser local/privado ou estar explicitamente
+    autorizado através de BLUESCAN_ALLOWED_HOSTS.
+    """
+
     if not isinstance(url, str):
         return False, "O alvo precisa ser uma string."
 
@@ -99,23 +112,28 @@ def validate_target(url):
     host = parsed.hostname.strip().lower().rstrip(".")
 
     if parsed.username is not None or parsed.password is not None:
-        return False, "URLs com usuário/senha embutidos não são permitidas."
+        return False, "URLs com usuário ou senha embutidos não são permitidas."
 
-    # Laboratório local
+    # Ambiente local/privado
     if _is_private_or_local(host):
-        return True, "Alvo local/privado permitido."
+        return True, "Alvo local ou privado autorizado."
 
-    # Bug bounty/laboratório explicitamente autorizado
+    # Domínio explicitamente autorizado
     if _is_explicitly_allowed(host):
         return True, "Alvo explicitamente autorizado."
 
     return (
         False,
-        "Alvo não está na lista de autorizados."
+        "Alvo não autorizado. Adicione o domínio à lista "
+        "BLUESCAN_ALLOWED_HOSTS antes da análise."
     )
 
 
 def normalize_target(url):
+    """
+    Normaliza e valida a estrutura básica da URL.
+    """
+
     if not isinstance(url, str):
         raise ValueError("Alvo inválido.")
 
@@ -139,5 +157,9 @@ def normalize_target(url):
 
 
 def is_authorized_mode():
+    """
+    Indica se existe pelo menos um domínio explicitamente
+    autorizado na configuração.
+    """
     return bool(_allowed_hosts())
 PY
