@@ -1,29 +1,15 @@
-cd ~/bluescan-v2
-
-cat > app.py <<'PY'
 import json
-import time
-
 import streamlit as st
 
 from scanner import scan_target
 from target_policy import validate_target
 
 
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
-
 st.set_page_config(
     page_title="BlueScan",
     page_icon="🔵",
-    layout="wide",
+    layout="wide"
 )
-
-
-# ============================================================
-# CABEÇALHO
-# ============================================================
 
 st.title("🔵 BlueScan")
 
@@ -36,32 +22,18 @@ st.warning(
     "tenha autorização explícita para realizar testes."
 )
 
-
-# ============================================================
-# ENTRADA DO ALVO
-# ============================================================
-
 st.subheader("🎯 Alvo autorizado")
 
 target = st.text_input(
     "Informe a URL do alvo",
-    placeholder="https://kalitermu.github.io/jlsites/",
+    placeholder="https://kalitermu.github.io/jlsites/"
 )
 
 st.caption(
     "Exemplo: https://kalitermu.github.io/jlsites/"
 )
 
-
-# ============================================================
-# EXECUÇÃO
-# ============================================================
-
 if st.button("🔍 Executar análise", type="primary"):
-
-    # --------------------------------------------------------
-    # Validação básica
-    # --------------------------------------------------------
 
     if not target.strip():
         st.error("Informe um alvo autorizado.")
@@ -76,66 +48,20 @@ if st.button("🔍 Executar análise", type="primary"):
 
         st.success("Alvo aceito.")
 
-        # ----------------------------------------------------
-        # Área de status
-        # ----------------------------------------------------
+        st.info("🔵 BlueScan iniciando os módulos de segurança...")
 
-        status = st.empty()
         progress = st.progress(0)
 
-        status.info(
-            "🔵 BlueScan iniciando os módulos de segurança..."
-        )
+        status = st.empty()
 
-        progress.progress(5)
-
-        # ----------------------------------------------------
-        # Informações do processamento
-        # ----------------------------------------------------
-
-        info_box = st.empty()
-
-        inicio = time.time()
-
-        info_box.info(
-            "⏳ O scanner está executando as verificações. "
-            "Isso pode levar alguns segundos."
-        )
-
-        status.info(
-            "🌐 Executando análise de segurança..."
-        )
-
-        progress.progress(10)
-
-        # ----------------------------------------------------
-        # Scanner principal
-        #
-        # scan_target executa os módulos internamente.
-        # Mantemos essa chamada intacta.
-        # ----------------------------------------------------
+        status.info("🌐 Executando análise HTTP...")
+        progress.progress(20)
 
         result = scan_target(target.strip())
 
-        # ----------------------------------------------------
-        # Finalização
-        # ----------------------------------------------------
-
-        tempo_total = time.time() - inicio
-
         progress.progress(100)
 
-        status.success(
-            f"✅ Análise concluída em {tempo_total:.2f} segundos."
-        )
-
-        info_box.success(
-            "🔵 Todos os módulos do BlueScan finalizaram."
-        )
-
-        # ----------------------------------------------------
-        # Resultado
-        # ----------------------------------------------------
+        status.success("✅ Análise concluída.")
 
         st.divider()
 
@@ -143,85 +69,25 @@ if st.button("🔍 Executar análise", type="primary"):
 
         if isinstance(result, dict):
 
-            # ------------------------------------------------
-            # Resumo rápido
-            # ------------------------------------------------
-
-            correlation = result.get("correlation", {})
-
-            total_findings = correlation.get(
-                "total_findings",
-                0,
-            )
-
-            confirmed = correlation.get(
-                "confirmed_vulnerabilities",
-                0,
-            )
-
-            review = correlation.get(
-                "review_findings",
-                0,
-            )
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.metric(
-                    "Achados",
-                    total_findings,
-                )
-
-            with col2:
-                st.metric(
-                    "Vulnerabilidades confirmadas",
-                    confirmed,
-                )
-
-            with col3:
-                st.metric(
-                    "Itens para revisão",
-                    review,
-                )
-
-            st.divider()
-
-            # ------------------------------------------------
-            # JSON completo
-            # ------------------------------------------------
-
-            with st.expander(
-                "📄 Visualizar resultado completo",
-                expanded=False,
-            ):
-                st.json(result)
-
-            # ------------------------------------------------
-            # Download
-            # ------------------------------------------------
-
-            json_data = json.dumps(
-                result,
-                indent=2,
-                ensure_ascii=False,
-            )
+            st.json(result)
 
             st.download_button(
                 label="📥 Baixar relatório JSON",
-                data=json_data,
+                data=json.dumps(
+                    result,
+                    indent=2,
+                    ensure_ascii=False
+                ),
                 file_name="bluescan_report.json",
-                mime="application/json",
+                mime="application/json"
             )
 
         else:
-
             st.write(result)
 
     except Exception as e:
 
-        st.error(
-            "❌ O BlueScan encontrou um erro durante a análise."
-        )
+        st.error("❌ O BlueScan encontrou um erro durante a análise.")
 
         st.exception(e)
 
@@ -229,4 +95,3 @@ if st.button("🔍 Executar análise", type="primary"):
             "O erro acima é importante para identificar qual módulo "
             "está interrompendo a execução."
         )
-PY
