@@ -1,4 +1,4 @@
-cd ~/bluescan-v2
+
 source .venv/bin/activate
 
 cp app.py app.before_smart_summary.py
