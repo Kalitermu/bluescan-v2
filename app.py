@@ -1,10 +1,3 @@
-
-source .venv/bin/activate
-
-cp app.py app.before_smart_summary.py
-
-cat > app.py <<'PY'
-import json
 import streamlit as st
 
 from scanner import scan_target
@@ -14,308 +7,37 @@ from target_policy import validate_target
 st.set_page_config(
     page_title="BlueScan",
     page_icon="🔵",
-    layout="wide"
+    layout="wide",
 )
 
 
 # ============================================================
-# FUNÇÕES AUXILIARES
-# ============================================================
-
-def normalize(value):
-    if value is None:
-        return ""
-    return str(value).strip().lower()
-
-
-def find_result_lists(obj):
-    """
-    Procura listas de resultados dentro do JSON do scanner.
-    """
-
-    found = []
-
-    if isinstance(obj, dict):
-
-        for key, value in obj.items():
-
-            key_normalized = normalize(key)
-
-            if key_normalized in (
-                "resultados",
-                "results",
-                "findings",
-                "achados",
-                "findings_list"
-            ):
-                if isinstance(value, list):
-                    found.extend(value)
-
-            else:
-                found.extend(find_result_lists(value))
-
-    elif isinstance(obj, list):
-
-        for item in obj:
-            found.extend(find_result_lists(item))
-
-    return found
-
-
-def is_relevant_finding(item):
-    """
-    Decide se um resultado merece aparecer no resumo.
-    """
-
-    if not isinstance(item, dict):
-        return False
-
-    severity = normalize(
-        item.get("gravidade")
-        or item.get("severity")
-        or item.get("risco")
-    )
-
-    classification = normalize(
-        item.get("classificação")
-        or item.get("classificacao")
-        or item.get("classification")
-    )
-
-    status = item.get("status")
-
-    try:
-        status_code = int(status)
-    except (TypeError, ValueError):
-        status_code = None
-
-    # Bloqueios conhecidos não são interessantes para o resumo.
-    if status_code in (403, 404):
-        return False
-
-    if classification in (
-        "bloqueado",
-        "blocked",
-        "não encontrado",
-        "nao encontrado",
-        "not found"
-    ):
-        return False
-
-    # Gravidades relevantes.
-    if severity in (
-        "crítica",
-        "critica",
-        "critical",
-        "alta",
-        "high",
-        "média",
-        "media",
-        "medium"
-    ):
-        return True
-
-    # Respostas potencialmente interessantes.
-    if status_code in (200, 206):
-        return True
-
-    # Erros do servidor merecem investigação.
-    if status_code is not None and status_code >= 500:
-        return True
-
-    return False
-
-
-def get_summary(result):
-    """
-    Gera um resumo simples para apresentação no dashboard.
-    """
-
-    findings = find_result_lists(result)
-
-    relevant = [
-        item for item in findings
-        if is_relevant_finding(item)
-    ]
-
-    # Remove duplicados simples.
-    unique = []
-
-    seen = set()
-
-    for item in relevant:
-
-        identifier = (
-            normalize(item.get("url") or item.get("URL")),
-            normalize(
-                item.get("título")
-                or item.get("titulo")
-                or item.get("title")
-            ),
-            str(item.get("status", ""))
-        )
-
-        if identifier not in seen:
-            seen.add(identifier)
-            unique.append(item)
-
-    relevant = unique
-
-    # Informações gerais.
-    duration = (
-        result.get("duração_segundos")
-        or result.get("duration_seconds")
-        or result.get("duracao_segundos")
-    )
-
-    target = (
-        result.get("alvo")
-        or result.get("target")
-        or result.get("target_url")
-        or ""
-    )
-
-    # Procura dados do motor de exposição.
-    exposure = {}
-
-    if isinstance(result.get("exposição"), dict):
-        exposure = result["exposição"]
-
-    elif isinstance(result.get("exposicao"), dict):
-        exposure = result["exposicao"]
-
-    elif isinstance(result.get("exposure"), dict):
-        exposure = result["exposure"]
-
-    checked = (
-        exposure.get("caminhos_verificados")
-        or exposure.get("recursos_verificados")
-        or exposure.get("paths_checked")
-        or exposure.get("resources_checked")
-        or 0
-    )
-
-    discovered = (
-        exposure.get("recursos_descobertos")
-        or exposure.get("resources_discovered")
-        or 0
-    )
-
-    return {
-        "target": target,
-        "duration": duration,
-        "checked": checked,
-        "discovered": discovered,
-        "findings": relevant,
-        "all_findings": findings
-    }
-
-
-def show_finding(item, number):
-    """
-    Exibe somente um achado relevante.
-    """
-
-    severity = (
-        item.get("gravidade")
-        or item.get("severity")
-        or "Atenção"
-    )
-
-    severity_text = normalize(severity)
-
-    if severity_text in ("crítica", "critica", "critical"):
-        icon = "🔴"
-
-    elif severity_text in ("alta", "high"):
-        icon = "🟠"
-
-    elif severity_text in ("média", "media", "medium"):
-        icon = "🟡"
-
-    else:
-        icon = "🔎"
-
-    title = (
-        item.get("título")
-        or item.get("titulo")
-        or item.get("title")
-        or "Resultado que merece atenção"
-    )
-
-    url = (
-        item.get("URL")
-        or item.get("url")
-        or ""
-    )
-
-    status = item.get("status")
-
-    evidence = (
-        item.get("evidência")
-        or item.get("evidencia")
-        or item.get("evidence")
-        or ""
-    )
-
-    impact = (
-        item.get("impacto")
-        or item.get("impact")
-        or ""
-    )
-
-    recommendation = (
-        item.get("recomendação")
-        or item.get("recomendacao")
-        or item.get("recommendation")
-        or ""
-    )
-
-    st.markdown(
-        f"### {icon} {title}"
-    )
-
-    if severity:
-        st.write(f"**Gravidade:** {severity}")
-
-    if url:
-        st.code(str(url), language="text")
-
-    if status is not None:
-        st.write(f"**HTTP:** `{status}`")
-
-    if evidence:
-        st.write(f"**Evidência:** {evidence}")
-
-    if impact:
-        st.write(f"**Impacto:** {impact}")
-
-    if recommendation:
-        st.write(f"**Recomendação:** {recommendation}")
-
-    st.divider()
-
-
-# ============================================================
-# INTERFACE
+# CABEÇALHO
 # ============================================================
 
 st.title("🔵 BlueScan")
 
 st.markdown(
-    "Scanner de segurança para alvos próprios ou explicitamente autorizados."
+    """
+    **Scanner de segurança para alvos próprios ou explicitamente autorizados.**
+
+    Use somente sistemas próprios ou sistemas para os quais você
+    tenha autorização explícita para realizar testes.
+    """
 )
 
-st.warning(
-    "Use somente sistemas próprios ou sistemas para os quais você "
-    "tenha autorização explícita para realizar testes."
-)
+st.divider()
+
+
+# ============================================================
+# ALVO
+# ============================================================
 
 st.subheader("🎯 Alvo autorizado")
 
 target = st.text_input(
     "Informe a URL do alvo",
-    placeholder="https://kalitermu.github.io/jlsites/"
+    placeholder="https://exemplo.com",
 )
 
 st.caption(
@@ -324,263 +46,361 @@ st.caption(
 
 
 # ============================================================
-# EXECUÇÃO
+# BOTÃO
 # ============================================================
 
-if st.button("🔍 Executar análise", type="primary"):
+if st.button(
+    "🔍 Iniciar análise de segurança",
+    type="primary",
+    use_container_width=True,
+):
+
+    # --------------------------------------------------------
+    # VALIDAÇÃO
+    # --------------------------------------------------------
 
     if not target.strip():
-        st.error("Informe um alvo.")
+        st.warning("Informe uma URL para iniciar a análise.")
         st.stop()
+
+    target = target.strip()
+
+    try:
+        accepted, message = validate_target(target)
+
+    except Exception as error:
+        st.error(
+            f"Erro ao validar o alvo: {error}"
+        )
+        st.stop()
+
+    if not accepted:
+        st.error(
+            f"❌ {message}"
+        )
+        st.stop()
+
+    st.success(
+        f"✅ {message}"
+    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # EXECUÇÃO
+    # --------------------------------------------------------
+
+    st.info(
+        "🔵 BlueScan iniciando os módulos de segurança..."
+    )
+
+    status = st.empty()
+    progress = st.progress(0)
+
+    status.markdown(
+        "🌐 **Executando análise HTTP...**"
+    )
+
+    progress.progress(20)
 
     try:
 
-        valid, message = validate_target(target.strip())
+        result = scan_target(target)
 
-        if not valid:
-            st.error(message)
-            st.stop()
+    except Exception as error:
 
-        st.success("Alvo aceito.")
+        progress.empty()
+        status.empty()
 
-        st.info(
-            "🔵 BlueScan iniciando os módulos de segurança..."
+        st.error(
+            f"❌ Erro durante a análise: {error}"
         )
 
-        progress = st.progress(0)
+        st.exception(error)
 
-        status = st.empty()
+        st.stop()
 
-        status.info(
-            "🌐 Executando análise HTTP..."
+    progress.progress(100)
+
+    status.success(
+        "✅ Análise concluída."
+    )
+
+    st.divider()
+
+    # ========================================================
+    # RESULTADO
+    # ========================================================
+
+    st.header("📊 Resultado da análise")
+
+    if result is None:
+
+        st.warning(
+            "O scanner não retornou resultados."
         )
 
-        progress.progress(20)
+        st.stop()
 
-        result = scan_target(
-            target.strip()
+
+    # ========================================================
+    # RESULTADO EM DICIONÁRIO
+    # ========================================================
+
+    if isinstance(result, dict):
+
+        findings = result.get(
+            "findings",
+            []
         )
 
-        progress.progress(100)
-
-        status.success(
-            "✅ Análise concluída."
-        )
-
-        st.divider()
-
-        st.header("📊 Resultado da análise")
+        if not isinstance(findings, list):
+            findings = []
 
 
-        # ====================================================
-        # RESULTADO NÃO É JSON
-        # ====================================================
+        # ----------------------------------------------------
+        # CONTADORES
+        # ----------------------------------------------------
 
-        if not isinstance(result, dict):
+        critical = 0
+        high = 0
+        medium = 0
+        low = 0
+        info = 0
 
-            st.write(result)
+        for finding in findings:
 
-            st.stop()
+            if not isinstance(finding, dict):
+                continue
 
+            severity = str(
+                finding.get(
+                    "severity",
+                    finding.get(
+                        "risk",
+                        "info"
+                    )
+                )
+            ).lower()
 
-        # ====================================================
-        # RESUMO INTELIGENTE
-        # ====================================================
+            if severity == "critical":
+                critical += 1
 
-        summary = get_summary(result)
+            elif severity == "high":
+                high += 1
 
-        target_result = summary["target"]
-        duration = summary["duration"]
-        checked = summary["checked"]
-        discovered = summary["discovered"]
-        findings = summary["findings"]
-        all_findings = summary["all_findings"]
+            elif severity == "medium":
+                medium += 1
 
-
-        st.subheader("🧠 Resumo inteligente")
-
-
-        if findings:
-
-            st.error(
-                f"🔴 {len(findings)} resultado(s) merece(m) atenção."
-            )
-
-        else:
-
-            st.success(
-                "🟢 Nenhuma exposição relevante identificada."
-            )
-
-
-        # ====================================================
-        # MÉTRICAS
-        # ====================================================
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric(
-                "🔎 Caminhos verificados",
-                checked
-            )
-
-        with col2:
-            st.metric(
-                "📂 Recursos descobertos",
-                discovered
-            )
-
-        with col3:
-            st.metric(
-                "🚨 Achados relevantes",
-                len(findings)
-            )
-
-        with col4:
-
-            if duration is not None:
-
-                try:
-                    duration_text = f"{float(duration):.2f}s"
-
-                except (TypeError, ValueError):
-                    duration_text = str(duration)
+            elif severity == "low":
+                low += 1
 
             else:
-                duration_text = "N/D"
+                info += 1
 
-            st.metric(
-                "⏱️ Duração",
-                duration_text
+
+        # ----------------------------------------------------
+        # MÉTRICAS
+        # ----------------------------------------------------
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        col1.metric(
+            "Total",
+            len(findings)
+        )
+
+        col2.metric(
+            "Crítico",
+            critical
+        )
+
+        col3.metric(
+            "Alto",
+            high
+        )
+
+        col4.metric(
+            "Médio",
+            medium
+        )
+
+        col5.metric(
+            "Baixo",
+            low
+        )
+
+
+        # ----------------------------------------------------
+        # INFORMAÇÕES DA ANÁLISE
+        # ----------------------------------------------------
+
+        result_target = result.get(
+            "target",
+            target
+        )
+
+        st.write(
+            f"🎯 **Alvo analisado:** `{result_target}`"
+        )
+
+
+        duration = result.get(
+            "duration_seconds"
+        )
+
+        if duration is not None:
+
+            st.write(
+                f"⏱️ **Duração:** {duration} segundos"
             )
 
 
         # ====================================================
-        # CONCLUSÃO
-        # ====================================================
-
-        st.subheader("📝 Conclusão")
-
-        if findings:
-
-            st.warning(
-                "O BlueScan identificou resultados que merecem "
-                "investigação. Consulte os achados abaixo."
-            )
-
-        else:
-
-            st.info(
-                "Os caminhos analisados não apresentaram "
-                "exposição relevante. Respostas bloqueadas, como "
-                "HTTP 403, não são tratadas como vulnerabilidades."
-            )
-
-
-        # ====================================================
-        # ACHADOS RELEVANTES
+        # ACHADOS
         # ====================================================
 
         if findings:
 
             st.subheader(
-                "🚨 O que merece atenção"
+                "🔎 Achados de segurança"
             )
 
-            for index, finding in enumerate(
+            for number, finding in enumerate(
                 findings,
                 start=1
             ):
 
-                show_finding(
-                    finding,
-                    index
+                if not isinstance(finding, dict):
+                    continue
+
+                title = finding.get(
+                    "title",
+                    finding.get(
+                        "name",
+                        f"Achado {number}"
+                    )
                 )
+
+                severity = finding.get(
+                    "severity",
+                    finding.get(
+                        "risk",
+                        "INFO"
+                    )
+                )
+
+                category = finding.get(
+                    "category",
+                    "Segurança"
+                )
+
+                source = finding.get(
+                    "source",
+                    "BlueScan"
+                )
+
+                evidence = finding.get(
+                    "evidence",
+                    ""
+                )
+
+                impact = finding.get(
+                    "impact",
+                    finding.get(
+                        "consequence",
+                        ""
+                    )
+                )
+
+                recommendation = finding.get(
+                    "recommendation",
+                    ""
+                )
+
+
+                with st.expander(
+                    f"{str(severity).upper()} — {title}"
+                ):
+
+                    st.write(
+                        f"**Categoria:** {category}"
+                    )
+
+                    st.write(
+                        f"**Fonte:** {source}"
+                    )
+
+                    if evidence:
+
+                        st.write(
+                            "**Evidência:**"
+                        )
+
+                        st.code(
+                            str(evidence)
+                        )
+
+
+                    if impact:
+
+                        st.write(
+                            "**Impacto / consequência:**"
+                        )
+
+                        st.write(
+                            str(impact)
+                        )
+
+
+                    if recommendation:
+
+                        st.write(
+                            "**Recomendação:**"
+                        )
+
+                        st.write(
+                            str(recommendation)
+                        )
 
         else:
 
-            st.subheader(
-                "✅ Nenhum achado relevante"
-            )
-
-            st.write(
-                "O BlueScan realizou os testes previstos e não "
-                "encontrou evidências classificadas como exposição."
+            st.success(
+                "✅ Nenhum achado de segurança foi registrado."
             )
 
 
         # ====================================================
-        # OBSERVAÇÕES
+        # DADOS TÉCNICOS
         # ====================================================
-
-        if all_findings:
-
-            ignored = len(all_findings) - len(findings)
-
-            if ignored > 0:
-
-                st.caption(
-                    f"ℹ️ {ignored} resposta(s) técnica(s) "
-                    "não foram exibidas no resumo por não "
-                    "representarem um achado relevante."
-                )
-
-
-        # ====================================================
-        # DETALHES TÉCNICOS
-        # ====================================================
-
-        st.divider()
 
         with st.expander(
-            "🔍 Ver detalhes técnicos da análise"
+            "🧾 Resultado técnico completo"
         ):
 
             st.json(result)
 
 
-        # ====================================================
-        # JSON COMPLETO
-        # ====================================================
+    # ========================================================
+    # RESULTADO NÃO-DICT
+    # ========================================================
 
-        with st.expander(
-            "📄 Visualizar JSON completo"
-        ):
+    else:
 
-            st.json(result)
-
-
-        # ====================================================
-        # DOWNLOAD
-        # ====================================================
-
-        json_data = json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False
+        st.subheader(
+            "🧾 Resultado"
         )
 
-        st.download_button(
-            label="📥 Baixar relatório JSON",
-            data=json_data,
-            file_name="bluescan_report.json",
-            mime="application/json"
-        )
+        st.write(result)
 
 
-    except Exception as e:
+# ============================================================
+# RODAPÉ
+# ============================================================
 
-        st.error(
-            "❌ O BlueScan encontrou um erro durante a análise."
-        )
+st.divider()
 
-        st.exception(e)
-
-        st.info(
-            "O erro acima é importante para identificar qual "
-            "módulo está interrompendo a execução."
-        )
-PY
-
-python -m py_compile app.py
+st.caption(
+    "BlueScan — análise defensiva para sistemas próprios "
+    "ou explicitamente autorizados."
+)
