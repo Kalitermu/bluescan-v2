@@ -1,14 +1,45 @@
 import streamlit as st
 
-from scanner import scan_target
-from target_policy import validate_target
 
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
 
 st.set_page_config(
     page_title="BlueScan",
     page_icon="🔵",
     layout="wide",
 )
+
+
+# ============================================================
+# IMPORTAÇÃO DO SCANNER
+# ============================================================
+
+scanner_available = True
+scanner_error = None
+scan_target = None
+
+try:
+    from scanner import scan_target
+except Exception as error:
+    scanner_available = False
+    scanner_error = error
+
+
+# ============================================================
+# POLÍTICA DE ALVO
+# ============================================================
+
+policy_available = True
+policy_error = None
+validate_target = None
+
+try:
+    from target_policy import validate_target
+except Exception as error:
+    policy_available = False
+    policy_error = error
 
 
 # ============================================================
@@ -30,6 +61,35 @@ st.divider()
 
 
 # ============================================================
+# STATUS DO SISTEMA
+# ============================================================
+
+with st.expander("⚙️ Status do BlueScan", expanded=False):
+
+    if scanner_available:
+        st.success("✅ Módulo scanner carregado.")
+    else:
+        st.error("❌ Não foi possível carregar o módulo scanner.")
+
+        st.code(
+            str(scanner_error),
+            language="text",
+        )
+
+    if policy_available:
+        st.success("✅ Política de validação carregada.")
+    else:
+        st.error(
+            "❌ Não foi possível carregar target_policy."
+        )
+
+        st.code(
+            str(policy_error),
+            language="text",
+        )
+
+
+# ============================================================
 # ALVO
 # ============================================================
 
@@ -46,39 +106,101 @@ st.caption(
 
 
 # ============================================================
-# BOTÃO
+# BOTÃO DE ANÁLISE
 # ============================================================
 
-if st.button(
+start_scan = st.button(
     "🔍 Iniciar análise de segurança",
     type="primary",
     use_container_width=True,
-):
+)
+
+
+if start_scan:
 
     # --------------------------------------------------------
-    # VALIDAÇÃO
+    # VERIFICAÇÃO DA URL
     # --------------------------------------------------------
 
     if not target.strip():
-        st.warning("Informe uma URL para iniciar a análise.")
+
+        st.warning(
+            "Informe uma URL para iniciar a análise."
+        )
+
         st.stop()
+
 
     target = target.strip()
 
-    try:
-        accepted, message = validate_target(target)
 
-    except Exception as error:
+    # --------------------------------------------------------
+    # VERIFICAÇÃO DO MÓDULO
+    # --------------------------------------------------------
+
+    if not scanner_available:
+
         st.error(
-            f"Erro ao validar o alvo: {error}"
+            "❌ O BlueScan não conseguiu carregar o scanner."
         )
+
+        st.info(
+            "Abra o painel Manage app → Logs para verificar "
+            "qual dependência ou módulo do scanner está causando "
+            "o problema."
+        )
+
+        st.code(
+            str(scanner_error),
+            language="text",
+        )
+
         st.stop()
 
+
+    # --------------------------------------------------------
+    # VALIDAÇÃO DO ALVO
+    # --------------------------------------------------------
+
+    if not policy_available:
+
+        st.error(
+            "❌ O módulo target_policy não pôde ser carregado."
+        )
+
+        st.code(
+            str(policy_error),
+            language="text",
+        )
+
+        st.stop()
+
+
+    try:
+
+        accepted, message = validate_target(
+            target
+        )
+
+    except Exception as error:
+
+        st.error(
+            "❌ Erro durante a validação do alvo."
+        )
+
+        st.exception(error)
+
+        st.stop()
+
+
     if not accepted:
+
         st.error(
             f"❌ {message}"
         )
+
         st.stop()
+
 
     st.success(
         f"✅ {message}"
@@ -86,26 +208,41 @@ if st.button(
 
     st.divider()
 
+
     # --------------------------------------------------------
-    # EXECUÇÃO
+    # INÍCIO DA ANÁLISE
     # --------------------------------------------------------
 
     st.info(
         "🔵 BlueScan iniciando os módulos de segurança..."
     )
 
-    status = st.empty()
     progress = st.progress(0)
+
+    status = st.empty()
 
     status.markdown(
         "🌐 **Executando análise HTTP...**"
     )
 
-    progress.progress(20)
+    progress.progress(10)
+
+
+    # --------------------------------------------------------
+    # EXECUÇÃO DO SCANNER
+    # --------------------------------------------------------
 
     try:
 
-        result = scan_target(target)
+        result = scan_target(
+            target
+        )
+
+        progress.progress(100)
+
+        status.success(
+            "✅ Análise concluída."
+        )
 
     except Exception as error:
 
@@ -113,34 +250,34 @@ if st.button(
         status.empty()
 
         st.error(
-            f"❌ Erro durante a análise: {error}"
+            "❌ O scanner encontrou um erro durante a execução."
         )
 
         st.exception(error)
 
         st.stop()
 
-    progress.progress(100)
 
-    status.success(
-        "✅ Análise concluída."
-    )
+    # --------------------------------------------------------
+    # VERIFICAÇÃO DO RESULTADO
+    # --------------------------------------------------------
 
-    st.divider()
+    if result is None:
+
+        st.warning(
+            "O scanner terminou, mas não retornou resultados."
+        )
+
+        st.stop()
+
 
     # ========================================================
     # RESULTADO
     # ========================================================
 
+    st.divider()
+
     st.header("📊 Resultado da análise")
-
-    if result is None:
-
-        st.warning(
-            "O scanner não retornou resultados."
-        )
-
-        st.stop()
 
 
     # ========================================================
@@ -149,95 +286,9 @@ if st.button(
 
     if isinstance(result, dict):
 
-        findings = result.get(
-            "findings",
-            []
-        )
-
-        if not isinstance(findings, list):
-            findings = []
-
-
-        # ----------------------------------------------------
-        # CONTADORES
-        # ----------------------------------------------------
-
-        critical = 0
-        high = 0
-        medium = 0
-        low = 0
-        info = 0
-
-        for finding in findings:
-
-            if not isinstance(finding, dict):
-                continue
-
-            severity = str(
-                finding.get(
-                    "severity",
-                    finding.get(
-                        "risk",
-                        "info"
-                    )
-                )
-            ).lower()
-
-            if severity == "critical":
-                critical += 1
-
-            elif severity == "high":
-                high += 1
-
-            elif severity == "medium":
-                medium += 1
-
-            elif severity == "low":
-                low += 1
-
-            else:
-                info += 1
-
-
-        # ----------------------------------------------------
-        # MÉTRICAS
-        # ----------------------------------------------------
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-
-        col1.metric(
-            "Total",
-            len(findings)
-        )
-
-        col2.metric(
-            "Crítico",
-            critical
-        )
-
-        col3.metric(
-            "Alto",
-            high
-        )
-
-        col4.metric(
-            "Médio",
-            medium
-        )
-
-        col5.metric(
-            "Baixo",
-            low
-        )
-
-
-        # ----------------------------------------------------
-        # INFORMAÇÕES DA ANÁLISE
-        # ----------------------------------------------------
-
         result_target = result.get(
             "target",
-            target
+            target,
         )
 
         st.write(
@@ -256,9 +307,116 @@ if st.button(
             )
 
 
-        # ====================================================
+        # ----------------------------------------------------
+        # FINDINGS
+        # ----------------------------------------------------
+
+        findings = result.get(
+            "findings",
+            []
+        )
+
+
+        if not isinstance(
+            findings,
+            list
+        ):
+
+            findings = []
+
+
+        # ----------------------------------------------------
+        # CONTADORES
+        # ----------------------------------------------------
+
+        critical = 0
+        high = 0
+        medium = 0
+        low = 0
+        info = 0
+
+
+        for finding in findings:
+
+            if not isinstance(
+                finding,
+                dict
+            ):
+                continue
+
+
+            severity = str(
+                finding.get(
+                    "severity",
+                    finding.get(
+                        "risk",
+                        "info",
+                    ),
+                )
+            ).lower()
+
+
+            if severity == "critical":
+
+                critical += 1
+
+            elif severity == "high":
+
+                high += 1
+
+            elif severity == "medium":
+
+                medium += 1
+
+            elif severity == "low":
+
+                low += 1
+
+            else:
+
+                info += 1
+
+
+        # ----------------------------------------------------
+        # DASHBOARD
+        # ----------------------------------------------------
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+
+        col1.metric(
+            "Total",
+            len(findings),
+        )
+
+
+        col2.metric(
+            "Crítico",
+            critical,
+        )
+
+
+        col3.metric(
+            "Alto",
+            high,
+        )
+
+
+        col4.metric(
+            "Médio",
+            medium,
+        )
+
+
+        col5.metric(
+            "Baixo",
+            low,
+        )
+
+
+        # ----------------------------------------------------
         # ACHADOS
-        # ====================================================
+        # ----------------------------------------------------
 
         if findings:
 
@@ -266,56 +424,67 @@ if st.button(
                 "🔎 Achados de segurança"
             )
 
+
             for number, finding in enumerate(
                 findings,
-                start=1
+                start=1,
             ):
 
-                if not isinstance(finding, dict):
+                if not isinstance(
+                    finding,
+                    dict,
+                ):
                     continue
+
 
                 title = finding.get(
                     "title",
                     finding.get(
                         "name",
-                        f"Achado {number}"
-                    )
+                        f"Achado {number}",
+                    ),
                 )
+
 
                 severity = finding.get(
                     "severity",
                     finding.get(
                         "risk",
-                        "INFO"
-                    )
+                        "INFO",
+                    ),
                 )
+
 
                 category = finding.get(
                     "category",
-                    "Segurança"
+                    "Segurança",
                 )
+
 
                 source = finding.get(
                     "source",
-                    "BlueScan"
+                    "BlueScan",
                 )
+
 
                 evidence = finding.get(
                     "evidence",
-                    ""
+                    "",
                 )
+
 
                 impact = finding.get(
                     "impact",
                     finding.get(
                         "consequence",
-                        ""
-                    )
+                        "",
+                    ),
                 )
+
 
                 recommendation = finding.get(
                     "recommendation",
-                    ""
+                    "",
                 )
 
 
@@ -330,6 +499,7 @@ if st.button(
                     st.write(
                         f"**Fonte:** {source}"
                     )
+
 
                     if evidence:
 
@@ -363,6 +533,7 @@ if st.button(
                             str(recommendation)
                         )
 
+
         else:
 
             st.success(
@@ -370,19 +541,21 @@ if st.button(
             )
 
 
-        # ====================================================
-        # DADOS TÉCNICOS
-        # ====================================================
+        # ----------------------------------------------------
+        # RESULTADO TÉCNICO
+        # ----------------------------------------------------
 
         with st.expander(
             "🧾 Resultado técnico completo"
         ):
 
-            st.json(result)
+            st.json(
+                result
+            )
 
 
     # ========================================================
-    # RESULTADO NÃO-DICT
+    # RESULTADO QUE NÃO É DICT
     # ========================================================
 
     else:
@@ -391,7 +564,9 @@ if st.button(
             "🧾 Resultado"
         )
 
-        st.write(result)
+        st.write(
+            result
+        )
 
 
 # ============================================================
