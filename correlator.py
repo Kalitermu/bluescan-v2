@@ -1,7 +1,6 @@
-
 cd ~/bluescan-v2
 
-cp correlator.py correlator.backup_antes_profissional.py
+cp correlator.py correlator.corrompido.py
 
 cat > correlator.py <<'PY'
 SEVERITY_ORDER = {
@@ -24,54 +23,76 @@ def make_id(title):
 
 
 def normalize_finding(finding, source):
-    title = str(finding.get(
-        "title",
-        "Achado sem título"
-    ))
+    title = str(
+        finding.get(
+            "title",
+            "Achado sem título",
+        )
+    )
 
-    severity = str(finding.get(
-        "severity",
-        "INFO"
-    )).upper()
+    severity = str(
+        finding.get(
+            "severity",
+            "INFO",
+        )
+    ).upper()
 
     if severity not in SEVERITY_ORDER:
         severity = "INFO"
 
-    evidence = str(finding.get(
-        "evidence",
-        ""
-    ))
+    evidence = str(
+        finding.get(
+            "evidence",
+            "",
+        )
+    )
 
     title_lower = title.lower()
 
     if severity == "INFO":
         finding_type = "INFORMATION"
-    elif any(word in title_lower for word in [
-        "header",
-        "cabeçalho",
-        "política",
-        "policy",
-        "cookie",
-        "configuração",
-    ]):
+
+    elif any(
+        word in title_lower
+        for word in [
+            "header",
+            "cabeçalho",
+            "política",
+            "policy",
+            "cookie",
+            "configuração",
+        ]
+    ):
         finding_type = "CONFIGURATION"
+
     else:
         finding_type = "VULNERABILITY"
 
-    status = str(finding.get(
-        "status",
-        "CONFIRMED"
-    )).upper()
+    status = str(
+        finding.get(
+            "status",
+            "CONFIRMED",
+        )
+    ).upper()
 
-    if status not in {"CONFIRMED", "INDICATION"}:
+    if status not in {
+        "CONFIRMED",
+        "INDICATION",
+    }:
         status = "CONFIRMED"
 
-    confidence = str(finding.get(
-        "confidence",
-        "HIGH"
-    )).upper()
+    confidence = str(
+        finding.get(
+            "confidence",
+            "HIGH",
+        )
+    ).upper()
 
-    if confidence not in {"HIGH", "MEDIUM", "LOW"}:
+    if confidence not in {
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+    }:
         confidence = "HIGH"
 
     if finding_type == "CONFIGURATION":
@@ -127,61 +148,46 @@ def normalize_finding(finding, source):
     return {
         "id": finding.get(
             "id",
-            make_id(title)
+            make_id(title),
         ),
-
         "title": title,
-
         "severity": severity,
-
         "type": finding.get(
             "type",
-            finding_type
+            finding_type,
         ),
-
         "status": status,
-
         "confidence": confidence,
-
         "category": finding.get(
             "category",
-            source.upper()
+            source.upper(),
         ),
-
         "source": source,
-
         "cve": finding.get("cve"),
-
         "cwe": finding.get("cwe"),
-
         "evidence": evidence,
-
         "description": finding.get(
             "description",
-            description
+            description,
         ),
-
         "impact": finding.get(
             "impact",
-            impact
+            impact,
         ),
-
         "consequence": finding.get(
             "consequence",
-            consequence
+            consequence,
         ),
-
         "recommendation": finding.get(
             "recommendation",
             "Revisar a configuração e aplicar "
-            "as boas práticas de segurança."
+            "as boas práticas de segurança.",
         ),
-
         "validation": finding.get(
             "validation",
             "Executar novamente o BlueScan após "
             "a correção e confirmar que o achado "
-            "não aparece mais."
+            "não aparece mais.",
         ),
     }
 
@@ -213,7 +219,7 @@ def correlate(
 
         raw_findings = result.get(
             "findings",
-            []
+            [],
         )
 
         if not isinstance(raw_findings, list):
@@ -224,7 +230,7 @@ def correlate(
                 findings.append(
                     normalize_finding(
                         finding,
-                        source
+                        source,
                     )
                 )
 
@@ -239,14 +245,16 @@ def correlate(
 
         unique[key] = finding
 
-    findings = list(unique.values())
+    findings = list(
+        unique.values()
+    )
 
     findings.sort(
         key=lambda item: SEVERITY_ORDER.get(
             item["severity"],
-            0
+            0,
         ),
-        reverse=True
+        reverse=True,
     )
 
     counts = {
@@ -296,7 +304,6 @@ def correlate(
 
     return {
         "risk": risk,
-
         "summary": {
             "total_findings": len(findings),
             "confirmed": confirmed,
@@ -311,8 +318,17 @@ def correlate(
             "hardening": types["HARDENING"],
             "information": types["INFORMATION"],
         },
-
         "findings": findings,
     }
 PY
-     
+
+python3 -m py_compile correlator.py
+
+echo
+echo "===== RESULTADO ====="
+
+if [ $? -eq 0 ]; then
+    echo "OK - correlator.py sem erro de sintaxe"
+else
+    echo "ERRO - correlator.py ainda possui problema"
+fi
