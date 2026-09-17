@@ -1,805 +1,717 @@
-cat > scanner.py <<'PY'
-import re
-import time
-from datetime import datetime, timezone
-from urllib.parse import urlparse, urljoin
+cd ~/bluescan-v2
 
-import httpx
+cp scanner_http.py scanner_http.backup_antes_qualificacao.py
 
+cat > scanner_http.py <<'PY'
+import hashlib
+from urllib.parse import urlparse
 
-USER_AGENT = "BlueScan/2.1"
-TIMEOUT = 15.0
+import requests
 
 
-def _finding(
+USER_AGENT = "BlueScan-Lab/2.2"
+
+REQUEST_TIMEOUT = 15
+METHOD_TIMEOUT = 10
+
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": {
+        "severity": "LOW",
+        "type": "HARDENING",
+        "recommendation": (
+            "Avaliar a implementação de uma Content-Security-Policy "
+            "adequada à aplicação."
+        ),
+        "impact": (
+            "A ausência de uma CSP reduz uma camada de defesa "
+            "contra determinados conteúdos e scripts não autorizados."
+        ),
+        "consequence": (
+            "Dependendo da aplicação e de outras falhas existentes, "
+            "a ausência dessa política pode aumentar o impacto de "
+            "determinados ataques no navegador."
+        ),
+    },
+    "Strict-Transport-Security": {
+        "severity": "LOW",
+        "type": "HARDENING",
+        "recommendation": (
+            "Em aplicações HTTPS, avaliar a implementação de "
+            "Strict-Transport-Security."
+        ),
+        "impact": (
+            "Sem HSTS, o navegador não recebe uma política explícita "
+            "para exigir HTTPS em acessos futuros."
+        ),
+        "consequence": (
+            "Em determinados cenários de rede, a ausência de HSTS "
+            "pode reduzir a proteção contra downgrade ou acesso "
+            "inicial sem HTTPS."
+        ),
+    },
+    "X-Content-Type-Options": {
+        "severity": "LOW",
+        "type": "HARDENING",
+        "recommendation": (
+            "Adicionar X-Content-Type-Options: nosniff."
+        ),
+        "impact": (
+            "A ausência de nosniff reduz uma proteção do navegador "
+            "contra determinadas interpretações incorretas de tipos "
+            "de conteúdo."
+        ),
+        "consequence": (
+            "Dependendo do conteúdo servido, interpretações "
+            "inesperadas pelo navegador podem aumentar a superfície "
+            "de ataque."
+        ),
+    },
+    "X-Frame-Options": {
+        "severity": "LOW",
+        "type": "HARDENING",
+        "recommendation": (
+            "Adicionar X-Frame-Options apropriado ou utilizar "
+            "frame-ancestors na Content-Security-Policy."
+        ),
+        "impact": (
+            "A ausência dessa proteção pode permitir que a página "
+            "seja enquadrada por outro contexto quando a aplicação "
+            "não possui outra política equivalente."
+        ),
+        "consequence": (
+            "Dependendo da aplicação, isso pode aumentar a exposição "
+            "a ataques baseados em enquadramento da interface."
+        ),
+    },
+    "Referrer-Policy": {
+        "severity": "INFO",
+        "type": "HARDENING",
+        "recommendation": (
+            "Avaliar uma política Referrer-Policy adequada."
+        ),
+        "impact": (
+            "Sem uma política explícita, o comportamento de envio "
+            "do referenciador depende das regras padrão do navegador."
+        ),
+        "consequence": (
+            "Dependendo das URLs acessadas, informações de contexto "
+            "podem ser compartilhadas além do necessário."
+        ),
+    },
+    "Permissions-Policy": {
+        "severity": "INFO",
+        "type": "HARDENING",
+        "recommendation": (
+            "Avaliar uma Permissions-Policy adequada à aplicação."
+        ),
+        "impact": (
+            "A ausência de Permissions-Policy reduz o controle "
+            "explícito sobre determinados recursos do navegador."
+        ),
+        "consequence": (
+            "Recursos que não são necessários à aplicação podem "
+            "permanecer disponíveis conforme o comportamento do "
+            "navegador e dos componentes utilizados."
+        ),
+    },
+}
+
+
+def make_finding_id(prefix, title, evidence=""):
+    raw = f"{prefix}|{title}|{evidence}"
+
+    digest = hashlib.sha256(
+        raw.encode("utf-8", errors="replace")
+    ).hexdigest()[:10].upper()
+
+    return f"BLUESCAN-{prefix}-{digest}"
+
+
+def add_finding(
+    result,
     title,
     severity,
     category,
-    source,
-    evidence="",
+    evidence,
+    recommendation,
+    finding_type="VULNERABILITY",
+    status="CONFIRMED",
+    confidence="HIGH",
     impact="",
-    recommendation="",
+    consequence="",
 ):
-    return {
-        "title": title,
-        "severity": severity,
-        "category": category,
-        "source": source,
-        "evidence": evidence,
-        "impact": impact,
-        "recommendation": recommendation,
+    existing_keys = {
+        (
+            finding.get("title"),
+            finding.get("evidence"),
+        )
+        for finding in result["findings"]
     }
 
+    key = (
+        title,
+        evidence,
+    )
 
-def _add_finding(
-    findings,
-    title,
-    severity,
-    category,
-    evidence="",
-    impact="",
-    recommendation="",
-):
-    """
-    Adiciona um achado evitando duplicações pelo título.
-    """
-
-    if any(item.get("title") == title for item in findings):
+    if key in existing_keys:
         return
 
-    findings.append(
-        _finding(
-            title,
-            severity,
-            category,
-            "BlueScan HTTP",
-            evidence,
-            impact,
-            recommendation,
-        )
+    result["findings"].append(
+        {
+            "id": make_finding_id(
+                category.upper().replace(" ", "-"),
+                title,
+                evidence,
+            ),
+            "title": title,
+            "severity": str(severity).upper(),
+            "type": str(finding_type).upper(),
+            "status": str(status).upper(),
+            "confidence": str(confidence).upper(),
+            "category": category,
+            "source": "BlueScan HTTP",
+            "evidence": evidence,
+            "description": (
+                f"O BlueScan identificou a condição: {title}."
+            ),
+            "impact": impact,
+            "consequence": consequence,
+            "recommendation": recommendation,
+        }
     )
 
 
-def _header(headers, name):
-    """
-    Busca um cabeçalho sem diferenciar maiúsculas/minúsculas.
-    """
+def get_header(headers, name):
+    value = headers.get(name)
 
-    wanted = name.lower()
+    if value is not None:
+        return value
+
+    name_lower = name.lower()
 
     for key, value in headers.items():
-        if str(key).lower() == wanted:
-            return str(value)
+        if str(key).lower() == name_lower:
+            return value
 
     return None
 
 
-def _cookie_has_attribute(cookie_text, attribute):
-    """
-    Verifica um atributo de cookie de forma case-insensitive.
-    """
-
-    pattern = rf"(?:^|;)\s*{re.escape(attribute)}(?:=|;|$)"
-
-    return re.search(
-        pattern,
-        cookie_text,
-        flags=re.IGNORECASE,
-    ) is not None
-
-
-def _extract_set_cookie_headers(response):
-    """
-    Obtém Set-Cookie quando disponível.
-    """
-
-    cookies = []
-
-    try:
-        values = response.headers.get_list("set-cookie")
-        if values:
-            return values
-    except Exception:
-        pass
-
-    value = _header(response.headers, "Set-Cookie")
-
-    if value:
-        cookies.append(value)
-
-    return cookies
-
-
-def _analyze_security_headers(response, parsed, findings):
-    """
-    Analisa headers de segurança relevantes.
-    """
-
+def analyze_security_headers(result, response):
     headers = response.headers
 
-    # HSTS só faz sentido quando o acesso é HTTPS.
-    if parsed.scheme.lower() == "https":
-        if not _header(headers, "Strict-Transport-Security"):
-            _add_finding(
-                findings,
-                "HSTS ausente",
-                "low",
-                "Security Headers",
-                "Strict-Transport-Security não foi encontrado.",
-                "Pode reduzir a capacidade do navegador de reforçar o uso de HTTPS.",
-                "Avaliar a implementação de Strict-Transport-Security.",
-            )
-
-    # CSP.
-    if not _header(headers, "Content-Security-Policy"):
-        _add_finding(
-            findings,
-            "Content-Security-Policy ausente",
-            "info",
-            "Security Headers",
-            "Content-Security-Policy não foi encontrado.",
-            "A ausência de CSP elimina uma camada adicional de controle sobre recursos carregados pelo navegador.",
-            "Avaliar uma Content-Security-Policy adequada à aplicação.",
+    for header, info in SECURITY_HEADERS.items():
+        value = get_header(
+            headers,
+            header,
         )
 
-    # MIME sniffing.
-    x_content = _header(headers, "X-Content-Type-Options")
+        if value is not None:
+            continue
 
-    if not x_content:
-        _add_finding(
-            findings,
-            "X-Content-Type-Options ausente",
-            "low",
-            "Security Headers",
-            "X-Content-Type-Options não foi encontrado.",
-            "Pode reduzir algumas proteções contra MIME sniffing.",
-            "Avaliar o uso de X-Content-Type-Options: nosniff.",
-        )
-    elif x_content.lower().strip() != "nosniff":
-        _add_finding(
-            findings,
-            "X-Content-Type-Options configurado de forma diferente de nosniff",
-            "info",
-            "Security Headers",
-            f"X-Content-Type-Options: {x_content}",
-            "A configuração observada não corresponde ao valor normalmente utilizado para impedir MIME sniffing.",
-            "Revisar a configuração do cabeçalho.",
-        )
-
-    # Clickjacking:
-    # X-Frame-Options OU CSP frame-ancestors.
-    x_frame = _header(headers, "X-Frame-Options")
-    csp = _header(headers, "Content-Security-Policy") or ""
-
-    has_frame_ancestors = "frame-ancestors" in csp.lower()
-
-    if not x_frame and not has_frame_ancestors:
-        _add_finding(
-            findings,
-            "Proteção contra framing não identificada",
-            "low",
-            "Security Headers",
-            "X-Frame-Options ausente e diretiva frame-ancestors não identificada na CSP.",
-            "Pode aumentar a exposição a ataques de clickjacking, dependendo do contexto da aplicação.",
-            "Avaliar X-Frame-Options ou CSP com frame-ancestors.",
-        )
-
-    # Referrer Policy.
-    if not _header(headers, "Referrer-Policy"):
-        _add_finding(
-            findings,
-            "Referrer-Policy ausente",
-            "info",
-            "Security Headers",
-            "Referrer-Policy não foi encontrado.",
-            "O navegador pode utilizar uma política de referência diferente da desejada pela aplicação.",
-            "Avaliar uma Referrer-Policy apropriada.",
-        )
-
-    # Permissions Policy.
-    if not _header(headers, "Permissions-Policy"):
-        _add_finding(
-            findings,
-            "Permissions-Policy ausente",
-            "info",
-            "Security Headers",
-            "Permissions-Policy não foi encontrado.",
-            "Recursos e APIs do navegador podem não estar explicitamente restringidos por essa política.",
-            "Avaliar uma Permissions-Policy adequada ao sistema.",
+        add_finding(
+            result=result,
+            title=f"{header} ausente",
+            severity=info["severity"],
+            category="Security Headers",
+            evidence=(
+                f"O cabeçalho {header} não foi encontrado "
+                "na resposta HTTP."
+            ),
+            recommendation=info["recommendation"],
+            finding_type=info["type"],
+            status="CONFIRMED",
+            confidence="HIGH",
+            impact=info["impact"],
+            consequence=info["consequence"],
         )
 
 
-def _analyze_information_disclosure(response, findings):
-    """
-    Identifica informações de tecnologia expostas.
-    """
-
-    server = _header(response.headers, "Server")
-
-    if server:
-        _add_finding(
-            findings,
-            "Identificação do servidor exposta",
-            "info",
-            "Information Disclosure",
-            f"Server: {server}",
-            "Pode fornecer informações utilizadas para fingerprinting da infraestrutura.",
-            "Avaliar se a exposição desse detalhe é necessária.",
-        )
-
-    powered_by = _header(response.headers, "X-Powered-By")
-
-    if powered_by:
-        _add_finding(
-            findings,
-            "Tecnologia exposta por X-Powered-By",
-            "low",
-            "Information Disclosure",
-            f"X-Powered-By: {powered_by}",
-            "Pode revelar a tecnologia utilizada pela aplicação.",
-            "Avaliar a remoção desse cabeçalho em produção.",
-        )
-
-
-def _analyze_cors(response, findings):
-    """
-    Analisa configurações CORS observáveis na resposta.
-    """
-
-    allow_origin = _header(
+def analyze_server_disclosure(result, response):
+    server = get_header(
         response.headers,
-        "Access-Control-Allow-Origin",
+        "Server",
     )
 
-    if allow_origin == "*":
-        _add_finding(
-            findings,
-            "CORS permite qualquer origem",
-            "info",
-            "CORS",
-            "Access-Control-Allow-Origin: *",
-            "Recursos podem estar disponíveis para requisições originadas de qualquer domínio, conforme o recurso e demais controles.",
-            "Verificar se o uso de '*' é realmente necessário para o recurso.",
+    if server:
+        add_finding(
+            result=result,
+            title="Identificação do servidor exposta",
+            severity="INFO",
+            category="Information Disclosure",
+            evidence=f"Server: {server}",
+            recommendation=(
+                "Avaliar se detalhes desnecessários de software "
+                "e infraestrutura podem ser reduzidos em produção."
+            ),
+            finding_type="INFORMATION",
+            status="CONFIRMED",
+            confidence="HIGH",
+            impact=(
+                "O cabeçalho fornece uma informação adicional sobre "
+                "a infraestrutura utilizada pelo serviço."
+            ),
+            consequence=(
+                "A informação pode contribuir para o reconhecimento "
+                "da tecnologia, mas não demonstra comprometimento "
+                "por si só."
+            ),
+        )
+
+    powered = get_header(
+        response.headers,
+        "X-Powered-By",
+    )
+
+    if powered:
+        add_finding(
+            result=result,
+            title="Tecnologia exposta por X-Powered-By",
+            severity="LOW",
+            category="Information Disclosure",
+            evidence=f"X-Powered-By: {powered}",
+            recommendation=(
+                "Avaliar a remoção de X-Powered-By caso essa "
+                "informação não seja necessária."
+            ),
+            finding_type="INFORMATION",
+            status="CONFIRMED",
+            confidence="HIGH",
+            impact=(
+                "O cabeçalho pode revelar tecnologia ou componente "
+                "utilizado pela aplicação."
+            ),
+            consequence=(
+                "Essa informação pode facilitar o reconhecimento "
+                "da tecnologia, mas não constitui vulnerabilidade "
+                "explorável isoladamente."
+            ),
         )
 
 
-def _analyze_cookies(response, parsed, findings):
-    """
-    Analisa atributos básicos de cookies.
-    """
+def analyze_cookies(result, response, parsed):
+    for cookie in response.cookies:
+        secure = bool(cookie.secure)
 
-    cookie_headers = _extract_set_cookie_headers(response)
-
-    for raw_cookie in cookie_headers:
-
-        first_part = raw_cookie.split(";", 1)[0].strip()
-
-        if "=" not in first_part:
-            continue
-
-        cookie_name = first_part.split("=", 1)[0].strip()
-
-        if not cookie_name:
-            continue
-
-        secure = _cookie_has_attribute(
-            raw_cookie,
-            "Secure",
+        httponly = cookie.has_nonstandard_attr(
+            "HttpOnly"
         )
 
-        httponly = _cookie_has_attribute(
-            raw_cookie,
-            "HttpOnly",
+        samesite = cookie.get_nonstandard_attr(
+            "SameSite"
         )
 
-        samesite = re.search(
-            r"(?:^|;)\s*SameSite\s*=\s*([^;]+)",
-            raw_cookie,
-            flags=re.IGNORECASE,
-        )
+        if samesite is not None:
+            samesite = str(samesite)
 
-        samesite_value = (
-            samesite.group(1).strip()
-            if samesite
-            else None
+        cookie_info = {
+            "name": cookie.name,
+            "secure": secure,
+            "httponly": httponly,
+            "samesite": samesite,
+        }
+
+        result["cookies"].append(
+            cookie_info
         )
 
         if parsed.scheme.lower() == "https" and not secure:
-            _add_finding(
-                findings,
-                f"Cookie sem Secure: {cookie_name}",
-                "low",
-                "Cookies",
-                f"Cookie '{cookie_name}' não apresentou o atributo Secure.",
-                "Em determinadas situações, o cookie pode ficar mais exposto a transmissão sem a proteção esperada.",
-                "Avaliar o uso de Secure para cookies transmitidos por HTTPS.",
+            add_finding(
+                result=result,
+                title=f"Cookie sem atributo Secure: {cookie.name}",
+                severity="LOW",
+                category="Cookies",
+                evidence=(
+                    f"Cookie '{cookie.name}' foi recebido "
+                    "sem o atributo Secure."
+                ),
+                recommendation=(
+                    "Avaliar o uso do atributo Secure em cookies "
+                    "transmitidos por HTTPS."
+                ),
+                finding_type="HARDENING",
+                status="CONFIRMED",
+                confidence="HIGH",
+                impact=(
+                    "O cookie não possui uma restrição explícita "
+                    "para transmissão somente por HTTPS."
+                ),
+                consequence=(
+                    "Em determinados cenários, o cookie pode ficar "
+                    "mais exposto caso seja enviado por uma conexão "
+                    "não protegida."
+                ),
             )
 
         if not httponly:
-            _add_finding(
-                findings,
-                f"Cookie sem HttpOnly: {cookie_name}",
-                "info",
-                "Cookies",
-                f"Cookie '{cookie_name}' não apresentou HttpOnly.",
-                "JavaScript do navegador poderá ter acesso ao cookie quando o contexto permitir.",
-                "Quando apropriado, avaliar o uso de HttpOnly.",
+            add_finding(
+                result=result,
+                title=f"Cookie sem atributo HttpOnly: {cookie.name}",
+                severity="INFO",
+                category="Cookies",
+                evidence=(
+                    f"Cookie '{cookie.name}' não apresentou "
+                    "o atributo HttpOnly."
+                ),
+                recommendation=(
+                    "Quando o cookie não precisar ser acessado "
+                    "por JavaScript, avaliar o uso de HttpOnly."
+                ),
+                finding_type="HARDENING",
+                status="CONFIRMED",
+                confidence="HIGH",
+                impact=(
+                    "O cookie pode permanecer acessível a scripts "
+                    "executados no contexto da página."
+                ),
+                consequence=(
+                    "Caso exista outra vulnerabilidade que permita "
+                    "execução de script, a ausência de HttpOnly "
+                    "pode aumentar o impacto sobre o cookie."
+                ),
             )
 
-        if not samesite_value:
-            _add_finding(
-                findings,
-                f"Cookie sem SameSite explícito: {cookie_name}",
-                "info",
-                "Cookies",
-                f"Cookie '{cookie_name}' não apresentou SameSite explícito.",
-                "A política de envio do cookie entre origens não está explicitamente definida pelo atributo.",
-                "Avaliar uma política SameSite apropriada ao funcionamento da aplicação.",
+        if not samesite:
+            add_finding(
+                result=result,
+                title=f"Cookie sem SameSite explícito: {cookie.name}",
+                severity="INFO",
+                category="Cookies",
+                evidence=(
+                    f"Cookie '{cookie.name}' não apresentou "
+                    "SameSite explícito."
+                ),
+                recommendation=(
+                    "Avaliar uma política SameSite adequada, "
+                    "como Lax ou Strict conforme o funcionamento "
+                    "da aplicação."
+                ),
+                finding_type="HARDENING",
+                status="CONFIRMED",
+                confidence="HIGH",
+                impact=(
+                    "Não existe uma política SameSite explicitamente "
+                    "declarada para esse cookie."
+                ),
+                consequence=(
+                    "O comportamento entre contextos de navegação "
+                    "pode depender das regras padrão do navegador."
+                ),
             )
 
 
-def _analyze_content(response, parsed, findings):
-    """
-    Analisa conteúdo HTML de forma não destrutiva.
-    """
-
-    content_type = _header(
+def analyze_content(result, response):
+    content_type = get_header(
         response.headers,
         "Content-Type",
-    ) or ""
+    )
+
+    content_length = get_header(
+        response.headers,
+        "Content-Length",
+    )
+
+    result["content"] = {
+        "content_type": content_type,
+        "content_length": content_length,
+        "size_bytes": len(response.content),
+    }
 
     if not content_type:
-        _add_finding(
-            findings,
-            "Content-Type ausente",
-            "low",
-            "HTTP Configuration",
-            "A resposta não apresentou Content-Type.",
-            "Pode dificultar a interpretação correta do conteúdo pelo cliente.",
-            "Definir um Content-Type apropriado para a resposta.",
+        add_finding(
+            result=result,
+            title="Content-Type ausente",
+            severity="LOW",
+            category="HTTP Configuration",
+            evidence=(
+                "A resposta HTTP não apresentou "
+                "o cabeçalho Content-Type."
+            ),
+            recommendation=(
+                "Definir um Content-Type apropriado "
+                "para a resposta."
+            ),
+            finding_type="HARDENING",
+            status="CONFIRMED",
+            confidence="HIGH",
+            impact=(
+                "A ausência do tipo de conteúdo reduz a clareza "
+                "sobre como o recurso deve ser interpretado."
+            ),
+            consequence=(
+                "Dependendo do recurso e do navegador, isso pode "
+                "contribuir para interpretações inesperadas."
+            ),
         )
 
-    body = response.text[:200000]
 
-    # Erros detalhados comuns.
-    error_patterns = [
-        r"traceback\s*\(",
-        r"stack\s*trace",
-        r"fatal\s+error",
-        r"uncaught\s+exception",
-        r"sql\s+syntax",
-        r"mysql.*error",
-        r"postgresql.*error",
-        r"oracle.*error",
-        r"exception\s+in\s+thread",
-    ]
-
-    if any(
-        re.search(pattern, body, re.IGNORECASE)
-        for pattern in error_patterns
-    ):
-        _add_finding(
-            findings,
-            "Possível mensagem de erro detalhada exposta",
-            "medium",
-            "Information Disclosure",
-            "Padrão compatível com mensagem técnica de erro identificado no conteúdo.",
-            "Mensagens detalhadas podem revelar informações sobre componentes internos da aplicação.",
-            "Revisar o tratamento de erros e evitar mensagens técnicas detalhadas em respostas destinadas ao usuário.",
-        )
-
-    # Mixed content: somente para páginas HTTPS.
-    if parsed.scheme.lower() == "https":
-
-        insecure_resources = set()
-
-        patterns = [
-            r"""(?:src|href)\s*=\s*["'](http://[^"']+)["']""",
-            r"""url\(\s*["']?(http://[^"')]+)["']?\s*\)""",
-        ]
-
-        for pattern in patterns:
-            for match in re.findall(
-                pattern,
-                body,
-                flags=re.IGNORECASE,
-            ):
-                insecure_resources.add(match)
-
-        if insecure_resources:
-            examples = list(insecure_resources)[:5]
-
-            _add_finding(
-                findings,
-                "Possível conteúdo misto",
-                "medium",
-                "Transport Security",
-                "Recursos HTTP foram identificados em uma página HTTPS: "
-                + ", ".join(examples),
-                "Recursos carregados por HTTP podem reduzir a proteção oferecida pelo HTTPS.",
-                "Avaliar a migração dos recursos para HTTPS.",
-            )
-
-
-def _analyze_redirects(response, target, findings, redirects):
-    """
-    Registra redirecionamentos observados.
-    """
-
-    for item in response.history:
-
-        location = _header(
-            item.headers,
+def analyze_redirects(result, response):
+    for redirect in response.history:
+        location = get_header(
+            redirect.headers,
             "Location",
         )
 
-        entry = {
-            "status": item.status_code,
-            "from": str(item.url),
-            "location": location,
-        }
+        result["redirects"].append(
+            {
+                "status": redirect.status_code,
+                "from": redirect.url,
+                "location": location,
+                "to": location,
+            }
+        )
 
-        redirects.append(entry)
+        if not location:
+            continue
 
-        if location:
-            destination = urljoin(
-                str(item.url),
-                location,
+        source_scheme = urlparse(
+            redirect.url
+        ).scheme.lower()
+
+        destination = urlparse(
+            location
+        )
+
+        destination_scheme = destination.scheme.lower()
+
+        if (
+            source_scheme == "https"
+            and destination_scheme == "http"
+        ):
+            add_finding(
+                result=result,
+                title="Redirect de HTTPS para HTTP",
+                severity="MEDIUM",
+                category="Redirects",
+                evidence=(
+                    f"{redirect.url} redireciona para "
+                    f"{location}."
+                ),
+                recommendation=(
+                    "Evitar redirecionamentos de HTTPS "
+                    "para HTTP e manter o fluxo protegido."
+                ),
+                finding_type="VULNERABILITY",
+                status="CONFIRMED",
+                confidence="HIGH",
+                impact=(
+                    "O fluxo de navegação deixa HTTPS e direciona "
+                    "o cliente para HTTP sem criptografia."
+                ),
+                consequence=(
+                    "Dependendo do contexto, informações transmitidas "
+                    "após o redirecionamento podem ficar expostas "
+                    "na rede."
+                ),
             )
 
-            source_scheme = urlparse(
-                str(item.url)
-            ).scheme.lower()
 
-            destination_scheme = urlparse(
-                destination
-            ).scheme.lower()
-
-            if (
-                source_scheme == "http"
-                and destination_scheme == "https"
-            ):
-                continue
-
-            if (
-                source_scheme == "https"
-                and destination_scheme == "http"
-            ):
-                _add_finding(
-                    findings,
-                    "Redirecionamento HTTPS para HTTP",
-                    "medium",
-                    "Transport Security",
-                    f"{item.url} -> {destination}",
-                    "Pode levar o usuário de uma conexão HTTPS para HTTP.",
-                    "Revisar o fluxo de redirecionamento e evitar downgrade para HTTP.",
-                )
-
-
-def _analyze_status(response, findings):
-    """
-    Registra o status HTTP sem transformar códigos normais em vulnerabilidades.
-    """
-
-    status = response.status_code
-
-    if status == 401:
-        _add_finding(
-            findings,
-            "HTTP 401 — Autenticação requerida",
-            "info",
-            "HTTP",
-            "Status HTTP: 401 Unauthorized",
-            "O recurso requer autenticação para acesso.",
-            "Validar se o comportamento é esperado.",
-        )
-
-    elif status == 403:
-        _add_finding(
-            findings,
-            "HTTP 403 — Acesso negado",
-            "info",
-            "HTTP",
-            "Status HTTP: 403 Forbidden",
-            "O servidor recusou o acesso ao recurso solicitado.",
-            "Validar se o bloqueio é esperado para o recurso e contexto do teste.",
-        )
-
-    elif status == 404:
-        _add_finding(
-            findings,
-            "HTTP 404 — Recurso não encontrado",
-            "info",
-            "HTTP",
-            "Status HTTP: 404 Not Found",
-            "O recurso solicitado não foi encontrado.",
-            "Validar se o comportamento é esperado.",
-        )
-
-    elif status >= 500:
-        _add_finding(
-            findings,
-            f"HTTP {status} — Erro no servidor",
-            "medium",
-            "HTTP",
-            f"Status HTTP: {status}",
-            "A resposta indica erro no processamento pelo servidor.",
-            "Investigar logs da aplicação e verificar se o erro pode ser reproduzido de forma controlada.",
-        )
-
-    else:
-        _add_finding(
-            findings,
-            f"HTTP {status}",
-            "info",
-            "HTTP",
-            f"Status HTTP: {status}",
-            "O servidor respondeu à requisição.",
-            "Manter o serviço monitorado.",
-        )
-
-
-def _calculate_summary(findings):
-    """
-    Gera contagem por severidade.
-    """
-
-    summary = {
-        "total": len(findings),
-        "critical": 0,
-        "high": 0,
-        "medium": 0,
-        "low": 0,
-        "info": 0,
+def analyze_http_methods(result, url):
+    headers = {
+        "User-Agent": USER_AGENT
     }
-
-    for finding in findings:
-
-        severity = str(
-            finding.get("severity", "info")
-        ).lower()
-
-        if severity in summary:
-            summary[severity] += 1
-
-    return summary
-
-
-def scan_target(target):
-    """
-    Executa análise defensiva HTTP de um alvo autorizado.
-
-    O scanner não executa exploração nem tenta contornar
-    mecanismos de autenticação ou controle de acesso.
-    """
-
-    started = time.time()
-    started_at = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    if not isinstance(target, str):
-        raise ValueError("Alvo inválido.")
-
-    target = target.strip()
-
-    parsed = urlparse(target)
-
-    if parsed.scheme.lower() not in {
-        "http",
-        "https",
-    }:
-        raise ValueError(
-            "O alvo deve utilizar HTTP ou HTTPS."
-        )
-
-    if not parsed.hostname:
-        raise ValueError(
-            "A URL precisa conter um hostname válido."
-        )
-
-    findings = []
-    redirects = []
-    cookies = []
-
-    response = None
 
     try:
-
-        with httpx.Client(
-            timeout=TIMEOUT,
-            follow_redirects=True,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/json;q=0.9,*/*;q=0.8"
-                ),
-            },
-            verify=True,
-        ) as client:
-
-            response = client.get(target)
-
-    except httpx.ConnectTimeout as exc:
-
-        finished_at = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _add_finding(
-            findings,
-            "Timeout de conexão",
-            "medium",
-            "Connectivity",
-            str(exc),
-            "O servidor não respondeu dentro do tempo configurado.",
-            "Verificar disponibilidade do serviço e conectividade.",
+        options = requests.options(
+            url,
+            timeout=METHOD_TIMEOUT,
+            allow_redirects=False,
+            headers=headers,
         )
 
-        return {
-            "target": target,
-            "final_url": target,
-            "status_code": None,
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "duration_seconds": round(
-                time.time() - started,
-                2,
+        result["http_methods"]["OPTIONS"] = {
+            "status": options.status_code,
+            "allow": get_header(
+                options.headers,
+                "Allow",
             ),
-            "summary": _calculate_summary(findings),
-            "findings": findings,
-            "redirects": redirects,
-            "cookies": cookies,
-            "error": "Timeout de conexão.",
         }
 
-    except httpx.ConnectError as exc:
-
-        finished_at = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _add_finding(
-            findings,
-            "Falha de conexão",
-            "medium",
-            "Connectivity",
-            str(exc),
-            "Não foi possível estabelecer conexão com o alvo.",
-            "Verificar DNS, conectividade, porta e disponibilidade do serviço.",
-        )
-
-        return {
-            "target": target,
-            "final_url": target,
-            "status_code": None,
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "duration_seconds": round(
-                time.time() - started,
-                2,
-            ),
-            "summary": _calculate_summary(findings),
-            "findings": findings,
-            "redirects": redirects,
-            "cookies": cookies,
-            "error": "Falha de conexão.",
+    except Exception as error:
+        result["http_methods"]["OPTIONS"] = {
+            "error": str(error)
         }
 
-    except httpx.HTTPError as exc:
-
-        finished_at = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _add_finding(
-            findings,
-            "Erro HTTP durante a análise",
-            "medium",
-            "HTTP",
-            str(exc),
-            "A análise HTTP não conseguiu obter uma resposta válida.",
-            "Verificar o serviço e a conectividade do alvo autorizado.",
+    try:
+        head = requests.head(
+            url,
+            timeout=METHOD_TIMEOUT,
+            allow_redirects=False,
+            headers=headers,
         )
 
-        return {
-            "target": target,
-            "final_url": target,
-            "status_code": None,
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "duration_seconds": round(
-                time.time() - started,
-                2,
-            ),
-            "summary": _calculate_summary(findings),
-            "findings": findings,
-            "redirects": redirects,
-            "cookies": cookies,
-            "error": str(exc),
+        result["http_methods"]["HEAD"] = {
+            "status": head.status_code,
         }
 
-    _analyze_status(
-        response,
-        findings,
-    )
+    except Exception as error:
+        result["http_methods"]["HEAD"] = {
+            "error": str(error)
+        }
 
-    _analyze_security_headers(
-        response,
-        parsed,
-        findings,
-    )
 
-    _analyze_information_disclosure(
-        response,
-        findings,
-    )
-
-    _analyze_cors(
-        response,
-        findings,
-    )
-
-    _analyze_cookies(
-        response,
-        parsed,
-        findings,
-    )
-
-    _analyze_content(
-        response,
-        parsed,
-        findings,
-    )
-
-    _analyze_redirects(
-        response,
-        target,
-        findings,
-        redirects,
-    )
-
-    for raw_cookie in _extract_set_cookie_headers(
-        response
-    ):
-        cookies.append(
-            raw_cookie
-        )
-
-    finished_at = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    return {
-        "target": target,
-        "final_url": str(response.url),
-        "status_code": response.status_code,
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "duration_seconds": round(
-            time.time() - started,
-            2,
-        ),
-        "summary": _calculate_summary(
-            findings
-        ),
-        "findings": findings,
-        "redirects": redirects,
-        "cookies": cookies,
-        "response": {
-            "content_type": _header(
-                response.headers,
-                "Content-Type",
-            ),
-            "content_length": _header(
-                response.headers,
-                "Content-Length",
-            ),
-            "server": _header(
-                response.headers,
-                "Server",
-            ),
-        },
+def scan_http(url):
+    result = {
+        "target": url,
+        "status": None,
+        "final_url": None,
+        "redirects": [],
+        "server": None,
+        "headers": {},
+        "cookies": [],
+        "content": {},
+        "http_methods": {},
+        "findings": [],
     }
+
+    parsed = urlparse(url)
+
+    try:
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+            headers={
+                "User-Agent": USER_AGENT
+            },
+        )
+
+        result["status"] = response.status_code
+        result["final_url"] = response.url
+
+        result["server"] = get_header(
+            response.headers,
+            "Server",
+        )
+
+        result["headers"] = dict(
+            response.headers
+        )
+
+        analyze_redirects(
+            result,
+            response,
+        )
+
+        analyze_security_headers(
+            result,
+            response,
+        )
+
+        analyze_server_disclosure(
+            result,
+            response,
+        )
+
+        analyze_cookies(
+            result,
+            response,
+            parsed,
+        )
+
+        analyze_content(
+            result,
+            response,
+        )
+
+        analyze_http_methods(
+            result,
+            url,
+        )
+
+    except requests.exceptions.Timeout as error:
+        add_finding(
+            result=result,
+            title="Tempo limite da conexão HTTP",
+            severity="INFO",
+            category="Scanner",
+            evidence=str(error),
+            recommendation=(
+                "Verifique a conectividade e a disponibilidade "
+                "do alvo autorizado."
+            ),
+            finding_type="INFORMATION",
+            status="INDICATION",
+            confidence="HIGH",
+            impact=(
+                "O scanner não conseguiu concluir a comunicação "
+                "HTTP dentro do tempo configurado."
+            ),
+            consequence=(
+                "Não é possível concluir a avaliação HTTP completa "
+                "com essa evidência."
+            ),
+        )
+
+        result["error"] = str(error)
+
+    except requests.exceptions.RequestException as error:
+        add_finding(
+            result=result,
+            title="Falha na conexão HTTP",
+            severity="INFO",
+            category="Scanner",
+            evidence=str(error),
+            recommendation=(
+                "Verifique a conectividade, URL e disponibilidade "
+                "do alvo autorizado."
+            ),
+            finding_type="INFORMATION",
+            status="INDICATION",
+            confidence="HIGH",
+            impact=(
+                "A comunicação HTTP não pôde ser concluída."
+            ),
+            consequence=(
+                "A avaliação HTTP pode estar incompleta."
+            ),
+        )
+
+        result["error"] = str(error)
+
+    except Exception as error:
+        add_finding(
+            result=result,
+            title="Erro inesperado no scanner HTTP",
+            severity="INFO",
+            category="Scanner",
+            evidence=str(error),
+            recommendation=(
+                "Verifique os logs do BlueScan para identificar "
+                "a causa do erro."
+            ),
+            finding_type="INFORMATION",
+            status="INDICATION",
+            confidence="HIGH",
+            impact=(
+                "O módulo HTTP encontrou uma condição inesperada."
+            ),
+            consequence=(
+                "Parte da avaliação HTTP pode não ter sido concluída."
+            ),
+        )
+
+        result["error"] = str(error)
+
+    return result
+PY
+
+echo
+echo "===== TESTE DE SINTAXE ====="
+python3 -m py_compile scanner_http.py
+
+if [ $? -eq 0 ]; then
+    echo "OK - scanner_http.py sem erro de sintaxe"
+else
+    echo "ERRO - scanner_http.py possui erro de sintaxe"
+    exit 1
+fi
+
+echo
+echo "===== TESTE DE IMPORTAÇÃO ====="
+python3 - <<'PY'
+from scanner_http import scan_http
+
+print("OK - scanner_http importado")
+print("OK - scan_http disponível")
 PY
