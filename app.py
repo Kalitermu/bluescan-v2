@@ -13,36 +13,6 @@ st.set_page_config(
 
 
 # ============================================================
-# IMPORTAÇÃO DO SCANNER
-# ============================================================
-
-scanner_available = True
-scanner_error = None
-scan_target = None
-
-try:
-    from scanner import scan_target
-except Exception as error:
-    scanner_available = False
-    scanner_error = error
-
-
-# ============================================================
-# POLÍTICA DE ALVO
-# ============================================================
-
-policy_available = True
-policy_error = None
-validate_target = None
-
-try:
-    from target_policy import validate_target
-except Exception as error:
-    policy_available = False
-    policy_error = error
-
-
-# ============================================================
 # CABEÇALHO
 # ============================================================
 
@@ -61,32 +31,68 @@ st.divider()
 
 
 # ============================================================
-# STATUS DO SISTEMA
+# CARREGAMENTO DOS MÓDULOS
 # ============================================================
 
-with st.expander("⚙️ Status do BlueScan", expanded=False):
+scanner_available = False
+scanner_error = None
+scan_target = None
+
+try:
+    from scanner import scan_target
+
+    scanner_available = callable(scan_target)
+
+    if not scanner_available:
+        scanner_error = "scanner.scan_target não é uma função válida."
+
+except Exception as error:
+    scanner_error = error
+
+
+policy_available = False
+policy_error = None
+validate_target = None
+
+try:
+    from target_policy import validate_target
+
+    policy_available = callable(validate_target)
+
+    if not policy_available:
+        policy_error = "target_policy.validate_target não é uma função válida."
+
+except Exception as error:
+    policy_error = error
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+with st.expander("⚙️ Status do BlueScan", expanded=True):
 
     if scanner_available:
-        st.success("✅ Módulo scanner carregado.")
+        st.success("✅ Scanner carregado com sucesso.")
     else:
-        st.error("❌ Não foi possível carregar o módulo scanner.")
+        st.error("❌ Falha ao carregar o scanner.")
 
-        st.code(
-            str(scanner_error),
-            language="text",
-        )
+        if scanner_error is not None:
+            st.code(
+                repr(scanner_error),
+                language="text",
+            )
 
     if policy_available:
-        st.success("✅ Política de validação carregada.")
+        st.success("✅ Política de alvo carregada.")
     else:
-        st.error(
-            "❌ Não foi possível carregar target_policy."
-        )
+        st.error("❌ Falha ao carregar target_policy.")
 
-        st.code(
-            str(policy_error),
-            language="text",
-        )
+        if policy_error is not None:
+            st.code(
+                repr(policy_error),
+                language="text",
+            )
 
 
 # ============================================================
@@ -106,7 +112,7 @@ st.caption(
 
 
 # ============================================================
-# BOTÃO DE ANÁLISE
+# BOTÃO
 # ============================================================
 
 start_scan = st.button(
@@ -116,26 +122,25 @@ start_scan = st.button(
 )
 
 
+# ============================================================
+# EXECUÇÃO
+# ============================================================
+
 if start_scan:
 
     # --------------------------------------------------------
-    # VERIFICAÇÃO DA URL
+    # URL
     # --------------------------------------------------------
-
-    if not target.strip():
-
-        st.warning(
-            "Informe uma URL para iniciar a análise."
-        )
-
-        st.stop()
-
 
     target = target.strip()
 
+    if not target:
+        st.warning("Informe uma URL para iniciar a análise.")
+        st.stop()
+
 
     # --------------------------------------------------------
-    # VERIFICAÇÃO DO MÓDULO
+    # SCANNER
     # --------------------------------------------------------
 
     if not scanner_available:
@@ -145,42 +150,53 @@ if start_scan:
         )
 
         st.info(
-            "Abra o painel Manage app → Logs para verificar "
-            "qual dependência ou módulo do scanner está causando "
-            "o problema."
-        )
-
-        st.code(
-            str(scanner_error),
-            language="text",
+            "O erro exibido em 'Status do BlueScan' identifica "
+            "o módulo que precisa ser corrigido."
         )
 
         st.stop()
 
 
     # --------------------------------------------------------
-    # VALIDAÇÃO DO ALVO
+    # POLÍTICA
     # --------------------------------------------------------
 
     if not policy_available:
 
         st.error(
-            "❌ O módulo target_policy não pôde ser carregado."
+            "❌ O módulo de validação de alvo não está disponível."
         )
 
-        st.code(
-            str(policy_error),
-            language="text",
+        st.info(
+            "Verifique o erro exibido em 'Status do BlueScan'."
         )
 
         st.stop()
 
 
+    # --------------------------------------------------------
+    # VALIDAÇÃO
+    # --------------------------------------------------------
+
     try:
 
-        accepted, message = validate_target(
-            target
-        )
+        validation = validate_target(target)
+
+        if not isinstance(validation, tuple) or len(validation) != 2:
+
+            st.error(
+                "❌ target_policy.validate_target retornou "
+                "um formato inesperado."
+            )
+
+            st.code(
+                repr(validation),
+                language="text",
+            )
+
+            st.stop()
+
+        accepted, message = validation
 
     except Exception as error:
 
@@ -210,11 +226,11 @@ if start_scan:
 
 
     # --------------------------------------------------------
-    # INÍCIO DA ANÁLISE
+    # SCAN
     # --------------------------------------------------------
 
     st.info(
-        "🔵 BlueScan iniciando os módulos de segurança..."
+        "🔵 BlueScan iniciando a análise..."
     )
 
     progress = st.progress(0)
@@ -222,21 +238,15 @@ if start_scan:
     status = st.empty()
 
     status.markdown(
-        "🌐 **Executando análise HTTP...**"
+        "🔄 **Executando scanner...**"
     )
 
     progress.progress(10)
 
 
-    # --------------------------------------------------------
-    # EXECUÇÃO DO SCANNER
-    # --------------------------------------------------------
-
     try:
 
-        result = scan_target(
-            target
-        )
+        result = scan_target(target)
 
         progress.progress(100)
 
@@ -250,7 +260,7 @@ if start_scan:
         status.empty()
 
         st.error(
-            "❌ O scanner encontrou um erro durante a execução."
+            "❌ O scanner encontrou um erro."
         )
 
         st.exception(error)
@@ -259,21 +269,17 @@ if start_scan:
 
 
     # --------------------------------------------------------
-    # VERIFICAÇÃO DO RESULTADO
+    # RESULTADO
     # --------------------------------------------------------
 
     if result is None:
 
         st.warning(
-            "O scanner terminou, mas não retornou resultados."
+            "O scanner terminou sem retornar resultados."
         )
 
         st.stop()
 
-
-    # ========================================================
-    # RESULTADO
-    # ========================================================
 
     st.divider()
 
@@ -281,7 +287,7 @@ if start_scan:
 
 
     # ========================================================
-    # RESULTADO EM DICIONÁRIO
+    # DICIONÁRIO
     # ========================================================
 
     if isinstance(result, dict):
@@ -307,21 +313,12 @@ if start_scan:
             )
 
 
-        # ----------------------------------------------------
-        # FINDINGS
-        # ----------------------------------------------------
-
         findings = result.get(
             "findings",
-            []
+            [],
         )
 
-
-        if not isinstance(
-            findings,
-            list
-        ):
-
+        if not isinstance(findings, list):
             findings = []
 
 
@@ -329,21 +326,19 @@ if start_scan:
         # CONTADORES
         # ----------------------------------------------------
 
-        critical = 0
-        high = 0
-        medium = 0
-        low = 0
-        info = 0
+        counts = {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "info": 0,
+        }
 
 
         for finding in findings:
 
-            if not isinstance(
-                finding,
-                dict
-            ):
+            if not isinstance(finding, dict):
                 continue
-
 
             severity = str(
                 finding.get(
@@ -353,64 +348,44 @@ if start_scan:
                         "info",
                     ),
                 )
-            ).lower()
+            ).strip().lower()
 
 
-            if severity == "critical":
-
-                critical += 1
-
-            elif severity == "high":
-
-                high += 1
-
-            elif severity == "medium":
-
-                medium += 1
-
-            elif severity == "low":
-
-                low += 1
-
+            if severity in counts:
+                counts[severity] += 1
             else:
-
-                info += 1
+                counts["info"] += 1
 
 
         # ----------------------------------------------------
         # DASHBOARD
         # ----------------------------------------------------
 
-        col1, col2, col3, col4, col5 = st.columns(5)
+        columns = st.columns(5)
 
-
-        col1.metric(
+        columns[0].metric(
             "Total",
             len(findings),
         )
 
-
-        col2.metric(
+        columns[1].metric(
             "Crítico",
-            critical,
+            counts["critical"],
         )
 
-
-        col3.metric(
+        columns[2].metric(
             "Alto",
-            high,
+            counts["high"],
         )
 
-
-        col4.metric(
+        columns[3].metric(
             "Médio",
-            medium,
+            counts["medium"],
         )
 
-
-        col5.metric(
+        columns[4].metric(
             "Baixo",
-            low,
+            counts["low"],
         )
 
 
@@ -430,10 +405,7 @@ if start_scan:
                 start=1,
             ):
 
-                if not isinstance(
-                    finding,
-                    dict,
-                ):
+                if not isinstance(finding, dict):
                     continue
 
 
@@ -508,7 +480,8 @@ if start_scan:
                         )
 
                         st.code(
-                            str(evidence)
+                            str(evidence),
+                            language="text",
                         )
 
 
@@ -549,13 +522,11 @@ if start_scan:
             "🧾 Resultado técnico completo"
         ):
 
-            st.json(
-                result
-            )
+            st.json(result)
 
 
     # ========================================================
-    # RESULTADO QUE NÃO É DICT
+    # RESULTADO NÃO-DICT
     # ========================================================
 
     else:
@@ -564,9 +535,7 @@ if start_scan:
             "🧾 Resultado"
         )
 
-        st.write(
-            result
-        )
+        st.write(result)
 
 
 # ============================================================
