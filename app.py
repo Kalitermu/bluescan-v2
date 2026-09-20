@@ -1,61 +1,350 @@
+import json
+from datetime import datetime, timezone
+
 import streamlit as st
 
-from scanner import scan_target
-from target_policy import validate_target
+import scanner
+import target_policy
 
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
 
 st.set_page_config(
     page_title="BlueScan",
-    page_icon="🔵",
+    page_icon="🛡️",
     layout="wide",
 )
 
 
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
+
+def safe_text(value, default=""):
+    if value is None:
+        return default
+
+    if isinstance(value, (dict, list)):
+        return str(value)
+
+    return str(value)
+
+
+def normalize_severity(value):
+    """
+    Normaliza severidades vindas do scanner.
+    """
+    if value is None:
+        return "info"
+
+    severity = str(value).strip().lower()
+
+    aliases = {
+        "critical": "critical",
+        "crit": "critical",
+
+        "high": "high",
+
+        "medium": "medium",
+        "moderate": "medium",
+
+        "low": "low",
+
+        "info": "info",
+        "informational": "info",
+        "information": "info",
+    }
+
+    return aliases.get(severity, "info")
+
+
+def get_findings(result):
+    """
+    Retorna somente findings em formato de lista.
+    """
+    if not isinstance(result, dict):
+        return []
+
+    findings = result.get("findings", [])
+
+    if not isinstance(findings, list):
+        return []
+
+    valid = []
+
+    for finding in findings:
+        if isinstance(finding, dict):
+            valid.append(finding)
+
+    return valid
+
+
+def calculate_severity_distribution(findings):
+    """
+    Calcula a distribuição real dos findings.
+    """
+    distribution = {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+    }
+
+    for finding in findings:
+        severity = normalize_severity(
+            finding.get("severity")
+        )
+
+        if severity in distribution:
+            distribution[severity] += 1
+
+    return distribution
+
+
+def calculate_summary(findings):
+    """
+    Calcula o resumo a partir dos findings reais.
+
+    Confirmadas:
+        Findings explicitamente confirmados.
+
+    Para revisão:
+        Findings que precisam de validação.
+
+    Informativas:
+        Findings INFO e findings sem indicação
+        de confirmação/revisão.
+
+    Erros do scanner:
+        Findings marcados como erro ou categoria de erro.
+    """
+
+    confirmed = 0
+    review = 0
+    informational = 0
+    errors = 0
+
+    for finding in findings:
+
+        severity = normalize_severity(
+            finding.get("severity")
+        )
+
+        status = str(
+            finding.get("status", "")
+        ).strip().lower()
+
+        category = str(
+            finding.get("category", "")
+        ).strip().lower()
+
+        title = str(
+            finding.get("title", "")
+        ).strip().lower()
+
+        # --------------------------------------------
+        # Erros do scanner
+        # --------------------------------------------
+
+        if (
+            status in {
+                "error",
+                "failed",
+                "failure",
+            }
+            or "scanner error" in category
+            or "erro do scanner" in category
+            or "scanner error" in title
+            or "erro do scanner" in title
+        ):
+            errors += 1
+            continue
+
+        # --------------------------------------------
+        # Confirmadas
+        # --------------------------------------------
+
+        if status in {
+            "confirmed",
+            "confirmado",
+            "confirmed_finding",
+        }:
+            confirmed += 1
+            continue
+
+        # --------------------------------------------
+        # Para revisão
+        # --------------------------------------------
+
+        if status in {
+            "review",
+            "revisar",
+            "review_required",
+            "needs_review",
+            "to_review",
+        }:
+            review += 1
+            continue
+
+        # --------------------------------------------
+        # Informativas
+        # --------------------------------------------
+
+        if severity == "info":
+            informational += 1
+            continue
+
+        # --------------------------------------------
+        # Findings de segurança sem status explícito
+        #
+        # Mantemos LOW/MEDIUM/HIGH/CRITICAL como
+        # findings ainda não classificados, em vez
+        # de inventar que estão confirmados.
+        # --------------------------------------------
+
+        review += 1
+
+    return {
+        "confirmed": confirmed,
+        "review": review,
+        "informational": informational,
+        "errors": errors,
+    }
+
+
+def calculate_observed_severity(findings):
+    """
+    Retorna a maior severidade observada.
+    """
+    if not findings:
+        return "NONE"
+
+    levels = {
+        "info": 1,
+        "low": 2,
+        "medium": 3,
+        "high": 4,
+        "critical": 5,
+    }
+
+    reverse = {
+        1: "INFO",
+        2: "LOW",
+        3: "MEDIUM",
+        4: "HIGH",
+        5: "CRITICAL",
+    }
+
+    highest = 0
+
+    for finding in findings:
+        severity = normalize_severity(
+            finding.get("severity")
+        )
+
+        highest = max(
+            highest,
+            levels.get(severity, 1),
+        )
+
+    return reverse.get(highest, "NONE")
+
+
+def get_module_status(result):
+    """
+    Tenta encontrar os status dos módulos em diferentes
+    formatos possíveis usados pelo scanner.
+    """
+
+    if not isinstance(result, dict):
+        return {}
+
+    possible_keys = [
+        "module_status",
+        "module_statuses",
+        "modules_status",
+        "modules",
+        "status",
+    ]
+
+    for key in possible_keys:
+
+        value = result.get(key)
+
+        if isinstance(value, dict):
+            return value
+
+    return {}
+
+
+def format_duration(value):
+    if value is None:
+        return "N/A"
+
+    try:
+        return f"{float(value):.2f} segundos"
+    except Exception:
+        return safe_text(value, "N/A")
+
+
+def format_datetime(value):
+    if not value:
+        return "N/A"
+
+    return safe_text(value)
+
+
+# ============================================================
+# CABEÇALHO
+# ============================================================
+
 st.title("🛡️ BlueScan")
 
 st.markdown(
-    """
-**Scanner de segurança para alvos próprios ou explicitamente autorizados.**
+    "**Scanner de segurança para alvos próprios "
+    "ou explicitamente autorizados.**"
+)
 
-Use somente sistemas que você possui ou para os quais possui
-autorização explícita para realizar testes.
-"""
+st.caption(
+    "Use somente sistemas que você possui ou para os quais "
+    "possui autorização explícita para realizar testes."
 )
 
 
 # ============================================================
-# STATUS
+# STATUS DOS MÓDULOS
 # ============================================================
 
 st.subheader("⚙️ Status dos módulos")
 
-try:
-    from scanner import scan_target as _scanner_check
-
-    if callable(_scanner_check):
-        st.success("Scanner carregado corretamente.")
-    else:
-        st.error("Falha ao carregar o scanner.")
-
-except Exception as exc:
-    st.error("Falha ao carregar o scanner.")
-    st.code(repr(exc))
-
+scanner_loaded = False
+target_policy_loaded = False
 
 try:
-    from target_policy import validate_target as _policy_check
+    scanner_loaded = callable(
+        getattr(scanner, "scan_target", None)
+    )
+except Exception:
+    scanner_loaded = False
 
-    if callable(_policy_check):
-        st.success("target_policy carregado corretamente.")
-    else:
-        st.error("Falha ao carregar target_policy.")
-
-except Exception as exc:
-    st.error("Falha ao carregar target_policy.")
-    st.code(repr(exc))
+try:
+    target_policy_loaded = target_policy is not None
+except Exception:
+    target_policy_loaded = False
 
 
-st.divider()
+if scanner_loaded:
+    st.success("Scanner carregado corretamente.")
+else:
+    st.error("Scanner não carregado corretamente.")
+
+if target_policy_loaded:
+    st.success("target_policy carregado corretamente.")
+else:
+    st.error("target_policy não carregado corretamente.")
 
 
 # ============================================================
@@ -66,8 +355,7 @@ st.subheader("🎯 Alvo")
 
 target = st.text_input(
     "URL do alvo",
-    placeholder="https://example.com",
-    help="Somente sistemas próprios ou explicitamente autorizados.",
+    placeholder="https://exemplo.com",
 )
 
 
@@ -75,427 +363,292 @@ target = st.text_input(
 # EXECUÇÃO
 # ============================================================
 
-if st.button("🔎 Executar análise", type="primary"):
+scan_clicked = st.button(
+    "🔎 Executar análise",
+    type="primary",
+    use_container_width=True,
+)
+
+
+if scan_clicked:
 
     if not target.strip():
-        st.warning("Informe uma URL antes de executar a análise.")
+        st.warning("Informe uma URL para iniciar a análise.")
         st.stop()
 
-    valid, message = validate_target(target)
+    target = target.strip()
 
-    if not valid:
-        st.error(message)
-        st.stop()
-
-    st.info("BlueScan executando a análise defensiva...")
+    # --------------------------------------------------------
+    # Validação
+    # --------------------------------------------------------
 
     try:
-        result = scan_target(target)
+        policy_result = None
 
-        if not isinstance(result, dict):
-            st.error("O scanner retornou um resultado inválido.")
-            st.write(result)
+        if hasattr(target_policy, "validate_target"):
+            policy_result = target_policy.validate_target(
+                target
+            )
+
+        elif hasattr(target_policy, "is_allowed"):
+            policy_result = target_policy.is_allowed(
+                target
+            )
+
+        elif hasattr(target_policy, "check_target"):
+            policy_result = target_policy.check_target(
+                target
+            )
+
+        # Se a função existir e retornar False,
+        # bloquear o alvo.
+        if policy_result is False:
+            st.error(
+                "O alvo foi rejeitado pela política de autorização."
+            )
             st.stop()
 
-        st.success("Análise concluída.")
+        # Alguns módulos retornam dict.
+        if isinstance(policy_result, dict):
 
-        # ====================================================
-        # DADOS PRINCIPAIS
-        # ====================================================
-
-        st.subheader("📊 Resumo da análise")
-
-        summary = result.get("summary", {})
-
-        if not isinstance(summary, dict):
-            summary = {}
-
-        counts = summary.get("counts", {})
-
-        if not isinstance(counts, dict):
-            counts = {}
-
-        total = summary.get(
-            "total",
-            len(result.get("findings", [])),
-        )
-
-        critical = counts.get("CRITICAL", 0)
-        high = counts.get("HIGH", 0)
-        medium = counts.get("MEDIUM", 0)
-        low = counts.get("LOW", 0)
-        info = counts.get("INFO", 0)
-
-        confirmed = summary.get("confirmed", [])
-        review = summary.get("review", [])
-        informational = summary.get("informational", [])
-        scanner_errors = summary.get("scanner_errors", [])
-
-        if not isinstance(confirmed, list):
-            confirmed = []
-
-        if not isinstance(review, list):
-            review = []
-
-        if not isinstance(informational, list):
-            informational = []
-
-        if not isinstance(scanner_errors, list):
-            scanner_errors = []
-
-        confirmed_count = len(confirmed)
-        review_count = len(review)
-        informational_count = len(informational)
-        scanner_error_count = len(scanner_errors)
-
-        observed_severity = summary.get(
-            "observed_severity",
-            summary.get("severity", "NONE"),
-        )
-
-        message = summary.get("message", "")
-
-        # ====================================================
-        # CLASSIFICAÇÃO DOS ACHADOS
-        # ====================================================
-
-        st.markdown("### 🧭 Classificação dos achados")
-
-        status_cols = st.columns(4)
-
-        status_cols[0].metric(
-            "Confirmadas",
-            confirmed_count,
-        )
-
-        status_cols[1].metric(
-            "Para revisão",
-            review_count,
-        )
-
-        status_cols[2].metric(
-            "Informativas",
-            informational_count,
-        )
-
-        status_cols[3].metric(
-            "Erros do scanner",
-            scanner_error_count,
-        )
-
-        if message:
-            st.info(str(message))
-
-        st.caption(
-            f"Severidade observada: **{observed_severity}**"
-        )
-
-        # ====================================================
-        # DISTRIBUIÇÃO POR SEVERIDADE
-        # ====================================================
-
-        st.markdown("### 📊 Distribuição por severidade")
-
-        severity_cols = st.columns(6)
-
-        severity_cols[0].metric("Total", total)
-        severity_cols[1].metric("Critical", critical)
-        severity_cols[2].metric("High", high)
-        severity_cols[3].metric("Medium", medium)
-        severity_cols[4].metric("Low", low)
-        severity_cols[5].metric("Info", info)
-
-        st.divider()
-
-
-        # ====================================================
-        # STATUS DOS MÓDULOS
-        # ====================================================
-
-        st.subheader("🧩 Status dos módulos")
-
-        modules = result.get("modules", {})
-
-        if isinstance(modules, dict) and modules:
-
-            module_cols = st.columns(
-                min(len(modules), 4)
+            allowed = policy_result.get(
+                "allowed",
+                policy_result.get(
+                    "valid",
+                    True,
+                ),
             )
 
-            for index, (name, status) in enumerate(
-                modules.items()
-            ):
-
-                col = module_cols[
-                    index % len(module_cols)
-                ]
-
-                if isinstance(status, dict):
-
-                    module_status = status.get(
-                        "status",
-                        status.get(
-                            "state",
-                            "available",
-                        ),
-                    )
-
-                    col.metric(
-                        str(name),
-                        str(module_status),
-                    )
-
-                else:
-
-                    col.metric(
-                        str(name),
-                        str(status),
-                    )
-
-        else:
-            st.info("Nenhum status de módulo disponível.")
-
-
-        st.divider()
-
-
-        # ====================================================
-        # ALVO ANALISADO
-        # ====================================================
-
-        st.subheader("🎯 Alvo analisado")
-
-        st.markdown(
-            f"**URL:** {result.get('target', target)}"
-        )
-
-        st.markdown(
-            f"**URL final:** "
-            f"{result.get('final_url', 'N/A')}"
-        )
-
-        st.markdown(
-            f"**HTTP:** "
-            f"{result.get('status_code', 'N/A')}"
-        )
-
-        st.markdown(
-            f"**Duração:** "
-            f"{result.get('duration_seconds', 'N/A')} segundos"
-        )
-
-
-        st.divider()
-
-
-        # ====================================================
-        # ACHADOS
-        # ====================================================
-
-        st.subheader("🔎 Achados consolidados")
-
-        findings = result.get("findings", [])
-
-        if isinstance(findings, list) and findings:
-
-            for index, finding in enumerate(
-                findings,
-                start=1,
-            ):
-
-                if not isinstance(finding, dict):
-                    st.write(f"{index}. {finding}")
-                    continue
-
-                title = finding.get(
-                    "title",
-                    f"Achado {index}",
+            if allowed is False:
+                reason = policy_result.get(
+                    "reason",
+                    "Alvo não autorizado pela política.",
                 )
-
-                severity = str(
-                    finding.get(
-                        "severity",
-                        "INFO",
-                    )
-                ).upper()
-
-                category = finding.get(
-                    "category",
-                    "N/A",
-                )
-
-                source = finding.get(
-                    "source",
-                    "N/A",
-                )
-
-                evidence = finding.get(
-                    "evidence",
-                    "",
-                )
-
-                impact = finding.get(
-                    "impact",
-                    "",
-                )
-
-                consequence = finding.get(
-                    "consequence",
-                    "",
-                )
-
-                recommendation = finding.get(
-                    "recommendation",
-                    "",
-                )
-
-                with st.expander(
-                    f"{index}. [{severity}] {title}"
-                ):
-
-                    st.markdown(
-                        f"**Severidade:** {severity}"
-                    )
-
-                    st.markdown(
-                        f"**Categoria:** {category}"
-                    )
-
-                    st.markdown(
-                        f"**Fonte:** {source}"
-                    )
-
-                    if evidence:
-                        st.markdown("**Evidência**")
-                        st.code(
-                            str(evidence),
-                            language="text",
-                        )
-
-                    if impact:
-                        st.markdown(
-                            f"**Impacto:** {impact}"
-                        )
-
-                    if consequence:
-                        st.markdown(
-                            f"**Consequência:** "
-                            f"{consequence}"
-                        )
-
-                    if recommendation:
-                        st.markdown(
-                            f"**Recomendação:** "
-                            f"{recommendation}"
-                        )
-
-        else:
-
-            st.info(
-                "Nenhum finding foi registrado."
-            )
-
-
-        st.divider()
-
-
-        # ====================================================
-        # DETALHES DO WAPITI
-        # ====================================================
-
-        wapiti = modules.get("Wapiti")
-
-        if isinstance(wapiti, dict):
-
-            st.subheader("🛡️ Wapiti")
-
-            wapiti_status = wapiti.get(
-                "status",
-                "unknown",
-            )
-
-            wapiti_coverage = wapiti.get(
-                "coverage",
-                "unavailable",
-            )
-
-            urls_found = wapiti.get(
-                "urls_found",
-                0,
-            )
-
-            forms_found = wapiti.get(
-                "forms_found",
-                0,
-            )
-
-            protocol_error = wapiti.get(
-                "protocol_error",
-                False,
-            )
-
-            wapiti_cols = st.columns(5)
-
-            wapiti_cols[0].metric(
-                "Status",
-                str(wapiti_status),
-            )
-
-            wapiti_cols[1].metric(
-                "Cobertura",
-                str(wapiti_coverage),
-            )
-
-            wapiti_cols[2].metric(
-                "URLs/Formulários",
-                str(urls_found),
-            )
-
-            wapiti_cols[3].metric(
-                "Formulários",
-                str(forms_found),
-            )
-
-            wapiti_cols[4].metric(
-                "Erro protocolo",
-                "Sim" if protocol_error else "Não",
-            )
-
-            if wapiti_coverage == "limited":
-
-                st.warning(
-                    "⚠️ A análise do Wapiti teve cobertura limitada "
-                    "neste teste. Os resultados não devem ser "
-                    "interpretados como uma varredura completa."
-                )
-
-            elif wapiti_status == "completed":
-
-                st.success(
-                    "✅ Wapiti concluiu a execução com cobertura "
-                    "normal."
-                )
-
-            elif wapiti_status == "error":
 
                 st.error(
-                    "❌ O Wapiti apresentou erro durante a análise."
+                    f"Alvo rejeitado: {reason}"
+                )
+                st.stop()
+
+    except Exception as exc:
+
+        st.error(
+            f"Erro ao validar o alvo: {exc}"
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Execução do scanner
+    # --------------------------------------------------------
+
+    st.info(
+        "BlueScan executando a análise defensiva..."
+    )
+
+    started_ui = datetime.now(timezone.utc)
+
+    try:
+
+        result = scanner.scan_target(target)
+
+    except Exception as exc:
+
+        finished_ui = datetime.now(timezone.utc)
+
+        result = {
+            "target": target,
+            "final_url": target,
+            "status_code": None,
+            "started_at": started_ui.isoformat(),
+            "finished_at": finished_ui.isoformat(),
+            "duration_seconds": (
+                finished_ui - started_ui
+            ).total_seconds(),
+            "findings": [
+                {
+                    "title": "Erro durante a execução do scanner",
+                    "severity": "high",
+                    "category": "Scanner Error",
+                    "source": "BlueScan",
+                    "evidence": str(exc),
+                    "impact": (
+                        "A análise não pôde ser concluída "
+                        "normalmente."
+                    ),
+                    "recommendation": (
+                        "Verificar os logs e a implementação "
+                        "do módulo responsável."
+                    ),
+                    "status": "error",
+                }
+            ],
+        }
+
+    st.success("Análise concluída.")
+
+
+    # ========================================================
+    # NORMALIZAÇÃO DO RESULTADO
+    # ========================================================
+
+    if not isinstance(result, dict):
+
+        result = {
+            "target": target,
+            "final_url": target,
+            "status_code": None,
+            "findings": [],
+            "scanner_error": (
+                "O scanner retornou um formato inválido."
+            ),
+        }
+
+    findings = get_findings(result)
+
+    distribution = calculate_severity_distribution(
+        findings
+    )
+
+    summary = calculate_summary(
+        findings
+    )
+
+    observed_severity = calculate_observed_severity(
+        findings
+    )
+
+
+    # ========================================================
+    # RESUMO
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("📊 Resumo da análise")
+
+    summary_cols = st.columns(4)
+
+    summary_cols[0].metric(
+        "Confirmadas",
+        summary["confirmed"],
+    )
+
+    summary_cols[1].metric(
+        "Para revisão",
+        summary["review"],
+    )
+
+    summary_cols[2].metric(
+        "Informativas",
+        summary["informational"],
+    )
+
+    summary_cols[3].metric(
+        "Erros do scanner",
+        summary["errors"],
+    )
+
+    st.markdown(
+        f"**Severidade observada:** "
+        f"`{observed_severity}`"
+    )
+
+
+    # ========================================================
+    # DISTRIBUIÇÃO
+    # ========================================================
+
+    st.subheader("📊 Distribuição por severidade")
+
+    distribution_cols = st.columns(6)
+
+    distribution_cols[0].metric(
+        "Total",
+        len(findings),
+    )
+
+    distribution_cols[1].metric(
+        "Critical",
+        distribution["critical"],
+    )
+
+    distribution_cols[2].metric(
+        "High",
+        distribution["high"],
+    )
+
+    distribution_cols[3].metric(
+        "Medium",
+        distribution["medium"],
+    )
+
+    distribution_cols[4].metric(
+        "Low",
+        distribution["low"],
+    )
+
+    distribution_cols[5].metric(
+        "Info",
+        distribution["info"],
+    )
+
+
+    # ========================================================
+    # STATUS DOS MÓDULOS
+    # ========================================================
+
+    st.subheader("🧩 Status dos módulos")
+
+    module_status = get_module_status(
+        result
+    )
+
+    if module_status:
+
+        module_cols = st.columns(
+            min(
+                len(module_status),
+                4,
+            )
+        )
+
+        for index, (name, status) in enumerate(
+            module_status.items()
+        ):
+
+            col = module_cols[
+                index % len(module_cols)
+            ]
+
+            if isinstance(status, dict):
+
+                module_value = status.get(
+                    "status",
+                    status.get(
+                        "state",
+                        status.get(
+                            "available",
+                            "available",
+                        ),
+                    ),
                 )
 
-            report_path = wapiti.get("report_path")
+            else:
 
-            if report_path:
+                module_value = status
 
-                st.caption(
-                    f"Relatório JSON: `{report_path}`"
-                )
+            col.metric(
+                str(name),
+                str(module_value),
+            )
 
+    else:
 
-        # ====================================================
-        # DADOS TÉCNICOS
-        # ====================================================
+        # Tenta montar um status mínimo a partir dos
+        # componentes efetivamente encontrados no resultado.
 
-        st.subheader("🛠️ Dados técnicos")
+        inferred_modules = {}
 
         technical = result.get(
             "technical",
@@ -504,64 +657,298 @@ if st.button("🔎 Executar análise", type="primary"):
 
         if isinstance(technical, dict):
 
-            dns = technical.get("dns")
-            technologies = technical.get(
-                "technologies"
+            if "dns" in technical:
+                inferred_modules["DNS"] = (
+                    "disponível"
+                    if technical.get("dns")
+                    else "sem dados"
+                )
+
+            if "tls" in technical:
+                inferred_modules["TLS"] = (
+                    "disponível"
+                    if technical.get("tls")
+                    else "sem dados"
+                )
+
+            if "technologies" in technical:
+                inferred_modules["Tecnologias"] = (
+                    "disponível"
+                    if technical.get("technologies")
+                    else "sem dados"
+                )
+
+        if findings:
+            inferred_modules["HTTP"] = "executado"
+
+        if inferred_modules:
+
+            module_cols = st.columns(
+                min(
+                    len(inferred_modules),
+                    4,
+                )
             )
-            tls = technical.get("tls")
 
-            with st.expander("🌐 DNS"):
+            for index, (
+                name,
+                status,
+            ) in enumerate(
+                inferred_modules.items()
+            ):
 
-                if dns:
-                    st.json(dns)
-                else:
-                    st.info(
-                        "Nenhuma informação DNS disponível."
-                    )
-
-            with st.expander("🧬 Tecnologias"):
-
-                if technologies:
-                    st.json(technologies)
-                else:
-                    st.info(
-                        "Nenhuma tecnologia identificada."
-                    )
-
-            with st.expander("🔐 TLS"):
-
-                if tls:
-                    st.json(tls)
-                else:
-                    st.info(
-                        "Nenhuma informação TLS disponível."
-                    )
+                module_cols[
+                    index % len(module_cols)
+                ].metric(
+                    name,
+                    status,
+                )
 
         else:
 
             st.info(
-                "Nenhum dado técnico estruturado disponível."
+                "Nenhum status de módulo disponível."
             )
 
 
-        # ====================================================
-        # RESULTADO COMPLETO
-        # ====================================================
+    # ========================================================
+    # ALVO ANALISADO
+    # ========================================================
 
-        with st.expander(
-            "📄 Resultado técnico completo"
-        ):
-            st.json(result)
+    st.divider()
+
+    st.subheader("🎯 Alvo analisado")
+
+    analyzed_target = result.get(
+        "target",
+        target,
+    )
+
+    final_url = result.get(
+        "final_url",
+        analyzed_target,
+    )
+
+    status_code = result.get(
+        "status_code",
+        result.get(
+            "http_status",
+            "N/A",
+        ),
+    )
+
+    duration = result.get(
+        "duration_seconds",
+        None,
+    )
+
+    st.markdown(
+        f"**URL:** `{analyzed_target}`"
+    )
+
+    st.markdown(
+        f"**URL final:** `{final_url}`"
+    )
+
+    st.markdown(
+        f"**HTTP:** `{status_code}`"
+    )
+
+    st.markdown(
+        f"**Duração:** `{format_duration(duration)}`"
+    )
 
 
-    except Exception as exc:
+    # ========================================================
+    # ACHADOS CONSOLIDADOS
+    # ========================================================
 
-        st.error(
-            "Falha durante a execução do scanner."
+    st.subheader("🔎 Achados consolidados")
+
+    if not findings:
+
+        st.success(
+            "Nenhum achado foi identificado."
         )
 
-        st.exception(exc)
+    else:
 
+        for index, finding in enumerate(
+            findings,
+            start=1,
+        ):
+
+            title = safe_text(
+                finding.get(
+                    "title",
+                    "Achado sem título",
+                ),
+                "Achado sem título",
+            )
+
+            severity = normalize_severity(
+                finding.get(
+                    "severity",
+                    "info",
+                )
+            ).upper()
+
+            category = safe_text(
+                finding.get(
+                    "category",
+                    "N/A",
+                ),
+                "N/A",
+            )
+
+            source = safe_text(
+                finding.get(
+                    "source",
+                    "BlueScan",
+                ),
+                "BlueScan",
+            )
+
+            evidence = safe_text(
+                finding.get(
+                    "evidence",
+                    "Nenhuma evidência fornecida.",
+                ),
+                "Nenhuma evidência fornecida.",
+            )
+
+            impact = safe_text(
+                finding.get(
+                    "impact",
+                    "N/A",
+                ),
+                "N/A",
+            )
+
+            recommendation = safe_text(
+                finding.get(
+                    "recommendation",
+                    "N/A",
+                ),
+                "N/A",
+            )
+
+            st.markdown(
+                f"### {index}. [{severity}] {title}"
+            )
+
+            st.markdown(
+                f"**Severidade:** `{severity}`"
+            )
+
+            st.markdown(
+                f"**Categoria:** `{category}`"
+            )
+
+            st.markdown(
+                f"**Fonte:** `{source}`"
+            )
+
+            st.markdown("**Evidência**")
+
+            st.code(
+                evidence,
+                language="text",
+            )
+
+            st.markdown(
+                f"**Impacto:** {impact}"
+            )
+
+            st.markdown(
+                f"**Recomendação:** {recommendation}"
+            )
+
+            st.divider()
+
+
+    # ========================================================
+    # DADOS TÉCNICOS
+    # ========================================================
+
+    st.subheader("🛠️ Dados técnicos")
+
+    technical = result.get(
+        "technical",
+        {},
+    )
+
+    if isinstance(technical, dict):
+
+        dns = technical.get(
+            "dns"
+        )
+
+        technologies = technical.get(
+            "technologies"
+        )
+
+        tls = technical.get(
+            "tls"
+        )
+
+        with st.expander("🌐 DNS"):
+
+            if dns:
+
+                st.json(dns)
+
+            else:
+
+                st.info(
+                    "Nenhuma informação DNS disponível."
+                )
+
+        with st.expander("🧬 Tecnologias"):
+
+            if technologies:
+
+                st.json(technologies)
+
+            else:
+
+                st.info(
+                    "Nenhuma tecnologia identificada."
+                )
+
+        with st.expander("🔐 TLS"):
+
+            if tls:
+
+                st.json(tls)
+
+            else:
+
+                st.info(
+                    "Nenhuma informação TLS disponível."
+                )
+
+    else:
+
+        st.info(
+            "Nenhum dado técnico disponível."
+        )
+
+
+    # ========================================================
+    # RESULTADO COMPLETO
+    # ========================================================
+
+    with st.expander(
+        "📄 Resultado técnico completo"
+    ):
+
+        st.json(result)
+
+
+# ============================================================
+# RODAPÉ
+# ============================================================
 
 st.divider()
 
