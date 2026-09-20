@@ -1,5 +1,5 @@
 import streamlit as st
-
+import time
 from scanner import scan_target
 
 
