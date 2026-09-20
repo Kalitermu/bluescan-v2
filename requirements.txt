@@ -1,5 +1,6 @@
 streamlit==1.63.0
 requests
+httpx
 beautifulsoup4
 cryptography
 dnspython
