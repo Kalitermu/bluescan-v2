@@ -1,4 +1,4 @@
-cd ~/bluescan-v2
+
 source .venv/bin/activate
 
 cat > app.py <<'PY'
