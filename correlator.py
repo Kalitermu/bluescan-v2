@@ -1,389 +1,303 @@
-cd ~/bluescan-v2
-source .venv/bin/activate
+from typing import Any, Dict, List
 
-cat > correlator.py <<'PY'
+
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+
 SEVERITY_ORDER = {
-    "INFO": 0,
-    "LOW": 1,
-    "MEDIUM": 2,
-    "HIGH": 3,
-    "CRITICAL": 4,
+    "CRITICAL": 5,
+    "HIGH": 4,
+    "MEDIUM": 3,
+    "LOW": 2,
+    "INFO": 1,
+}
+
+VALID_STATUS = {
+    "confirmed",
+    "review",
+    "informational",
+    "scanner_error",
 }
 
 
-VALID_STATUSES = {
-    "OBSERVATION",
-    "INDICATION",
-    "CONFIRMED",
-}
+# ============================================================
+# HELPERS
+# ============================================================
+
+def _text(
+    value: Any,
+    default: str = "",
+) -> str:
+
+    if value is None:
+        return default
+
+    return str(value).strip()
 
 
-def make_id(title):
-    return (
-        str(title)
-        .lower()
-        .replace(" ", "-")
-        .replace("/", "-")
-        .replace(":", "")
-    )
+def _normalize_severity(
+    value: Any,
+) -> str:
 
-
-def infer_finding_type(finding):
-    """
-    Determina o tipo sem transformar observações em vulnerabilidades.
-    """
-
-    explicit_type = str(
-        finding.get("type", "")
-    ).upper().strip()
-
-    if explicit_type in {
-        "INFORMATION",
-        "RECONNAISSANCE",
-        "CONFIGURATION",
-        "VULNERABILITY",
-        "HARDENING",
-    }:
-        return explicit_type
-
-    title = str(
-        finding.get("title", "")
-    ).lower()
-
-    category = str(
-        finding.get("category", "")
-    ).lower()
-
-    text = f"{title} {category}"
-
-    if any(
-        word in text
-        for word in (
-            "header",
-            "cabeçalho",
-            "política",
-            "policy",
-            "cookie",
-            "configuração",
-            "configuration",
-            "hardening",
-            "security header",
-        )
-    ):
-        return "CONFIGURATION"
-
-    if any(
-        word in text
-        for word in (
-            "endpoint",
-            "reconnaissance",
-            "reconhecimento",
-            "parameter",
-            "parâmetro",
-            "url descoberta",
-        )
-    ):
-        return "RECONNAISSANCE"
-
-    if str(
-        finding.get("severity", "INFO")
-    ).upper() == "INFO":
-        return "INFORMATION"
-
-    return "VULNERABILITY"
-
-
-def normalize_status(finding, finding_type):
-    """
-    Preserva o status informado pelo módulo.
-
-    IMPORTANTE:
-    O correlator NÃO pode transformar OBSERVATION em CONFIRMED.
-    """
-
-    original = str(
-        finding.get("status", "")
-    ).upper().strip()
-
-    if original in VALID_STATUSES:
-        return original
-
-    # Se o módulo não informou status, inferimos de forma conservadora.
-    if finding_type in {
-        "INFORMATION",
-        "RECONNAISSANCE",
-    }:
-        return "OBSERVATION"
-
-    if finding_type in {
-        "CONFIGURATION",
-        "HARDENING",
-        "VULNERABILITY",
-    }:
-        return "INDICATION"
-
-    return "OBSERVATION"
-
-
-def normalize_confidence(finding):
-    confidence = str(
-        finding.get("confidence", "MEDIUM")
-    ).upper().strip()
-
-    if confidence not in {
-        "HIGH",
-        "MEDIUM",
-        "LOW",
-    }:
-        confidence = "MEDIUM"
-
-    return confidence
-
-
-def normalize_finding(finding, source):
-    title = str(
-        finding.get(
-            "title",
-            "Achado sem título",
-        )
-    )
-
-    severity = str(
-        finding.get(
-            "severity",
-            "INFO",
-        )
-    ).upper().strip()
+    severity = _text(
+        value,
+        "INFO",
+    ).upper()
 
     if severity not in SEVERITY_ORDER:
-        severity = "INFO"
+        return "INFO"
 
-    evidence = str(
-        finding.get(
-            "evidence",
-            "",
-        )
+    return severity
+
+
+def _normalize_status(
+    value: Any,
+) -> str:
+
+    status = _text(
+        value,
+    ).lower()
+
+    if status in VALID_STATUS:
+        return status
+
+    return ""
+
+
+def _status_from_finding(
+    finding: Dict[str, Any],
+) -> str:
+
+    explicit = _normalize_status(
+        finding.get("status")
     )
 
-    finding_type = infer_finding_type(finding)
+    if explicit:
+        return explicit
 
-    status = normalize_status(
-        finding,
-        finding_type,
+    severity = _normalize_severity(
+        finding.get("severity")
     )
 
-    confidence = normalize_confidence(
+    if severity == "INFO":
+        return "informational"
+
+    return "review"
+
+
+# ============================================================
+# NORMALIZAÇÃO
+# ============================================================
+
+def normalize_finding(
+    finding: Dict[str, Any],
+    source: str = "",
+) -> Dict[str, Any]:
+
+    severity = _normalize_severity(
+        finding.get("severity")
+    )
+
+    status = _status_from_finding(
         finding
     )
 
-    if finding_type in {
-        "CONFIGURATION",
-        "HARDENING",
-    }:
-        description = (
-            "Foi identificada uma configuração ou "
-            "controle de segurança que pode ser "
-            "melhorado."
-        )
+    classification = status
 
-        impact = (
-            "A ausência ou configuração inadequada "
-            "pode reduzir determinadas camadas de "
-            "proteção da aplicação."
-        )
-
-        consequence = (
-            "Dependendo do contexto da aplicação, "
-            "a proteção disponível contra determinados "
-            "cenários de ataque pode ser reduzida."
-        )
-
-        default_recommendation = (
-            "Revisar a configuração identificada e "
-            "aplicar o controle de segurança adequado."
-        )
-
-    elif finding_type == "VULNERABILITY":
-        description = (
-            "Foi identificada uma condição que pode "
-            "representar uma vulnerabilidade de segurança."
-        )
-
-        impact = (
-            "A condição pode aumentar o risco de "
-            "comprometimento da aplicação ou de seus dados."
-        )
-
-        consequence = (
-            "Se a condição for explorável no contexto "
-            "real da aplicação, poderá afetar a "
-            "confidencialidade, integridade ou disponibilidade."
-        )
-
-        default_recommendation = (
-            "Validar manualmente a condição e, caso "
-            "confirmada, aplicar a correção correspondente."
-        )
-
-    elif finding_type == "RECONNAISSANCE":
-        description = (
-            "Foram identificadas informações relacionadas "
-            "à superfície de ataque do alvo."
-        )
-
-        impact = (
-            "Essas informações podem auxiliar a compreensão "
-            "dos endpoints e recursos expostos."
-        )
-
-        consequence = (
-            "A descoberta isoladamente não significa "
-            "que exista uma vulnerabilidade."
-        )
-
-        default_recommendation = (
-            "Revisar os endpoints identificados e confirmar "
-            "se a exposição é esperada."
-        )
-
-    else:
-        description = (
-            "Foi identificada uma informação relevante "
-            "para a avaliação de segurança."
-        )
-
-        impact = (
-            "A informação ajuda a compreender a superfície "
-            "de ataque do alvo."
-        )
-
-        consequence = (
-            "A informação isoladamente não significa "
-            "que o sistema esteja comprometido."
-        )
-
-        default_recommendation = (
-            "Avaliar a informação no contexto da aplicação "
-            "e verificar se a exposição é esperada."
-        )
-
-    return {
-        "id": finding.get(
-            "id",
-            make_id(title),
+    normalized = {
+        "title": _text(
+            finding.get(
+                "title",
+                "Achado sem título",
+            ),
+            "Achado sem título",
         ),
-        "title": title,
+
+        "category": _text(
+            finding.get(
+                "category",
+                "Security",
+            ),
+            "Security",
+        ),
+
         "severity": severity,
-        "type": finding.get(
-            "type",
-            finding_type,
+
+        "source": _text(
+            finding.get(
+                "source",
+                source,
+            ),
+            source,
         ),
+
+        "evidence": _text(
+            finding.get(
+                "evidence",
+            )
+        ),
+
+        "impact": _text(
+            finding.get(
+                "impact",
+            )
+        ),
+
+        "consequence": _text(
+            finding.get(
+                "consequence",
+            )
+        ),
+
+        "recommendation": _text(
+            finding.get(
+                "recommendation",
+            )
+        ),
+
+        "confidence": _text(
+            finding.get(
+                "confidence",
+                "medium",
+            ),
+            "medium",
+        ),
+
         "status": status,
-        "confidence": confidence,
-        "category": finding.get(
-            "category",
-            source.upper(),
-        ),
-        "source": source,
-        "cve": finding.get("cve"),
-        "cwe": finding.get("cwe"),
-        "evidence": evidence,
-        "description": finding.get(
-            "description",
-            description,
-        ),
-        "impact": finding.get(
-            "impact",
-            impact,
-        ),
-        "consequence": finding.get(
-            "consequence",
-            consequence,
-        ),
-        "recommendation": finding.get(
-            "recommendation",
-            default_recommendation,
-        ),
-        "validation": finding.get(
-            "validation",
-            "Executar novamente o BlueScan após "
-            "a correção e verificar se a condição "
-            "continua presente.",
-        ),
+
+        "classification": classification,
     }
 
+    return normalized
 
-def correlate(
-    http_result=None,
-    tls_result=None,
-    dns_result=None,
-    technology_result=None,
-    nuclei_result=None,
-    whatweb_result=None,
-    subdomains_result=None,
-):
-    findings = []
 
-    modules = [
-        ("HTTP", http_result),
-        ("TLS", tls_result),
-        ("DNS", dns_result),
-        ("TECHNOLOGY", technology_result),
-        ("NUCLEI", nuclei_result),
-        ("WHATWEB", whatweb_result),
-        ("SUBFINDER", subdomains_result),
-    ]
+# ============================================================
+# DEDUPLICAÇÃO
+# ============================================================
 
-    for source, result in modules:
-        if not isinstance(result, dict):
-            continue
+def deduplicate_findings(
+    findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
 
-        raw_findings = result.get(
-            "findings",
-            [],
-        )
+    unique: List[Dict[str, Any]] = []
 
-        if not isinstance(raw_findings, list):
-            continue
-
-        for finding in raw_findings:
-            if not isinstance(finding, dict):
-                continue
-
-            findings.append(
-                normalize_finding(
-                    finding,
-                    source,
-                )
-            )
-
-    # Remove apenas duplicatas realmente iguais.
-    unique = {}
+    seen = set()
 
     for finding in findings:
+
         key = (
-            finding["title"],
-            finding["source"],
-            finding["evidence"],
+            _text(finding.get("title")).lower(),
+            _text(finding.get("source")).lower(),
+            _text(finding.get("severity")).upper(),
+            _text(finding.get("status")).lower(),
+            _text(finding.get("evidence")).lower(),
         )
 
-        if key not in unique:
-            unique[key] = finding
+        if key in seen:
+            continue
 
-    findings = list(
-        unique.values()
-    )
+        seen.add(key)
 
-    findings.sort(
+        unique.append(
+            finding
+        )
+
+    return unique
+
+
+# ============================================================
+# ORDENAÇÃO
+# ============================================================
+
+def _sort_findings(
+    findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+
+    return sorted(
+        findings,
         key=lambda item: (
-            SEVERITY_ORDER.get(
-                item["severity"],
-                0,
+            -SEVERITY_ORDER.get(
+                _normalize_severity(
+                    item.get("severity")
+                ),
+                1,
             ),
-            item["status"],
+            _text(
+                item.get("title")
+            ).lower(),
         ),
-        reverse=True,
     )
+
+
+# ============================================================
+# SEVERIDADE OBSERVADA
+# ============================================================
+
+def _observed_severity(
+    findings: List[Dict[str, Any]],
+) -> str:
+
+    confirmed = [
+        item
+        for item in findings
+        if item.get("classification")
+        == "confirmed"
+    ]
+
+    if not confirmed:
+        return "NONE"
+
+    highest = max(
+        confirmed,
+        key=lambda item: SEVERITY_ORDER.get(
+            _normalize_severity(
+                item.get("severity")
+            ),
+            1,
+        ),
+    )
+
+    return _normalize_severity(
+        highest.get("severity")
+    )
+
+
+# ============================================================
+# RESUMO
+# ============================================================
+
+def build_summary(
+    findings: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+
+    confirmed = [
+        item
+        for item in findings
+        if item.get("classification")
+        == "confirmed"
+    ]
+
+    review = [
+        item
+        for item in findings
+        if item.get("classification")
+        == "review"
+    ]
+
+    informational = [
+        item
+        for item in findings
+        if item.get("classification")
+        == "informational"
+    ]
+
+    scanner_errors = [
+        item
+        for item in findings
+        if item.get("classification")
+        == "scanner_error"
+    ]
 
     counts = {
         "CRITICAL": 0,
@@ -393,116 +307,301 @@ def correlate(
         "INFO": 0,
     }
 
-    types = {
-        "VULNERABILITY": 0,
-        "CONFIGURATION": 0,
-        "HARDENING": 0,
-        "INFORMATION": 0,
-        "RECONNAISSANCE": 0,
-    }
-
-    statuses = {
-        "CONFIRMED": 0,
-        "INDICATION": 0,
-        "OBSERVATION": 0,
-    }
-
     for finding in findings:
-        severity = finding.get(
-            "severity",
-            "INFO",
+
+        severity = _normalize_severity(
+            finding.get("severity")
         )
 
-        if severity in counts:
-            counts[severity] += 1
+        counts[severity] += 1
 
-        finding_type = finding.get(
-            "type",
-            "INFORMATION",
+    severity = _observed_severity(
+        findings
+    )
+
+    if confirmed:
+
+        message = (
+            "Foram encontradas evidências "
+            "classificadas como confirmadas."
         )
 
-        if finding_type in types:
-            types[finding_type] += 1
+    elif review:
 
-        status = finding.get(
-            "status",
-            "OBSERVATION",
+        message = (
+            "Nenhuma vulnerabilidade foi confirmada. "
+            "Existem achados que requerem revisão."
         )
 
-        if status in statuses:
-            statuses[status] += 1
-
-    highest_severity = "INFO"
-
-    for severity in (
-        "CRITICAL",
-        "HIGH",
-        "MEDIUM",
-        "LOW",
-        "INFO",
-    ):
-        if counts[severity] > 0:
-            highest_severity = severity
-            break
-
-    # O risco é baseado na severidade encontrada,
-    # mas não transforma uma observação em confirmação.
-    if highest_severity == "CRITICAL":
-        risk = "CRÍTICO"
-    elif highest_severity == "HIGH":
-        risk = "ALTO"
-    elif highest_severity == "MEDIUM":
-        risk = "MÉDIO"
-    elif highest_severity == "LOW":
-        risk = "BAIXO"
     else:
-        risk = "INFORMATIVO"
 
-    summary = {
-        "total_findings": len(findings),
-
-        "confirmed": statuses["CONFIRMED"],
-        "indications": statuses["INDICATION"],
-        "observations": statuses["OBSERVATION"],
-
-        "severity": counts,
-
-        "types": types,
-
-        "vulnerabilities": types["VULNERABILITY"],
-        "configuration": types["CONFIGURATION"],
-        "hardening": types["HARDENING"],
-        "information": types["INFORMATION"],
-        "reconnaissance": types["RECONNAISSANCE"],
-
-        "status": statuses,
-
-        "highest_severity": highest_severity,
-        "risk": risk,
-    }
+        message = (
+            "Nenhuma vulnerabilidade foi confirmada "
+            "pelos testes executados."
+        )
 
     return {
-        "status": "completed",
-        "findings": findings,
+        "total": len(findings),
+
+        "confirmed": len(confirmed),
+
+        "review": len(review),
+
+        "informational": len(informational),
+
+        "scanner_errors": len(scanner_errors),
+
+        "counts": counts,
+
+        "severity": severity,
+
+        "message": message,
+    }
+
+
+# ============================================================
+# CORRELATOR PRINCIPAL
+# ============================================================
+
+def correlate_results(
+    results: Dict[str, Any],
+) -> Dict[str, Any]:
+
+    findings: List[Dict[str, Any]] = []
+
+    sources: Dict[str, str] = {}
+
+    checks: Dict[str, str] = {}
+
+    if not isinstance(
+        results,
+        dict,
+    ):
+
+        summary = build_summary([])
+
+        return {
+            "findings": [],
+            "sources": {},
+            "checks": {},
+            "total": 0,
+            "counts": summary["counts"],
+            "confirmed": [],
+            "review": [],
+            "informational": [],
+            "scanner_error": [],
+            "severity": "NONE",
+            "summary": summary,
+        }
+
+    ignored_keys = {
+        "target",
+        "url",
+        "summary",
+        "technical",
+        "metadata",
+        "status",
+        "checks",
+        "findings",
+    }
+
+    for source, raw_findings in results.items():
+
+        if source in ignored_keys:
+            continue
+
+        sources[str(source)] = "executed"
+
+        if isinstance(
+            raw_findings,
+            dict,
+        ):
+
+            if isinstance(
+                raw_findings.get("findings"),
+                list,
+            ):
+
+                module_checks = raw_findings.get(
+                    "checks"
+                )
+
+                if isinstance(
+                    module_checks,
+                    dict,
+                ):
+
+                    checks.update(
+                        {
+                            str(k): str(v)
+                            for k, v
+                            in module_checks.items()
+                        }
+                    )
+
+                raw_findings = raw_findings[
+                    "findings"
+                ]
+
+            elif isinstance(
+                raw_findings.get("results"),
+                list,
+            ):
+
+                raw_findings = raw_findings[
+                    "results"
+                ]
+
+            else:
+
+                raw_findings = [
+                    raw_findings
+                ]
+
+        if not isinstance(
+            raw_findings,
+            list,
+        ):
+            continue
+
+        for finding in raw_findings:
+
+            if not isinstance(
+                finding,
+                dict,
+            ):
+                continue
+
+            normalized = normalize_finding(
+                finding,
+                str(source),
+            )
+
+            findings.append(
+                normalized
+            )
+
+    # ========================================================
+    # DEDUPLICAÇÃO
+    # ========================================================
+
+    unique = deduplicate_findings(
+        findings
+    )
+
+    # ========================================================
+    # ORDENAÇÃO
+    # ========================================================
+
+    unique = _sort_findings(
+        unique
+    )
+
+    # ========================================================
+    # RESUMO
+    # ========================================================
+
+    summary = build_summary(
+        unique
+    )
+
+    # ========================================================
+    # LISTAS POR STATUS
+    # ========================================================
+
+    confirmed = [
+        item
+        for item in unique
+        if item.get("classification")
+        == "confirmed"
+    ]
+
+    review = [
+        item
+        for item in unique
+        if item.get("classification")
+        == "review"
+    ]
+
+    informational = [
+        item
+        for item in unique
+        if item.get("classification")
+        == "informational"
+    ]
+
+    scanner_error = [
+        item
+        for item in unique
+        if item.get("classification")
+        == "scanner_error"
+    ]
+
+    # ========================================================
+    # RETORNO NORMALIZADO
+    # ========================================================
+
+    return {
+        "findings": unique,
+
+        "sources": sources,
+
+        "checks": checks,
+
+        "total": len(unique),
+
+        "counts": summary["counts"],
+
+        "confirmed": confirmed,
+
+        "review": review,
+
+        "informational": informational,
+
+        "scanner_error": scanner_error,
+
+        "severity": summary["severity"],
+
         "summary": summary,
     }
 
 
-if __name__ == "__main__":
-    print(
-        "OK - correlator carregado."
+# ============================================================
+# COMPATIBILIDADE
+# ============================================================
+
+def correlate(
+    findings: List[Dict[str, Any]],
+    checks: Dict[str, Any] | None = None,
+    technical: Dict[str, Any] | None = None,
+    target: str = "",
+) -> Dict[str, Any]:
+
+    return correlate_results(
+        {
+            "Security Checks": {
+                "findings": findings,
+                "checks": checks or {},
+            }
+        }
     )
-PY
 
-echo
-echo "===== VALIDANDO SINTAXE ====="
-python3 -m py_compile correlator.py
 
-echo
-echo "===== VALIDANDO IMPORT ====="
-python3 - <<'PY'
-import correlator
+def normalize_results(
+    results: Dict[str, Any],
+) -> Dict[str, Any]:
 
-print("OK - correlator importado")
-print("OK - correlate disponível:", callable(correlator.correlate))
-PY
+    return correlate_results(
+        results
+    )
+
+
+def process_findings(
+    findings: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+
+    return correlate_results(
+        {
+            "Findings": findings
+        }
+    )
