@@ -1,294 +1,124 @@
-
+cd ~/bluescan-v2
 source .venv/bin/activate
 
 cat > app.py <<'PY'
 import streamlit as st
-
 from scanner import scan_target
-from target_policy import validate_target
 
 
 st.set_page_config(
     page_title="BlueScan",
-    page_icon="🔵",
+    page_icon="🛡️",
     layout="wide",
 )
 
 
-st.title("🔵 BlueScan")
+st.title("🛡️ BlueScan")
+st.caption(
+    "Scanner de segurança para alvos próprios ou explicitamente autorizados."
+)
 
-st.markdown(
-    """
-**Scanner de segurança para alvos próprios ou explicitamente autorizados.**
+st.info(
+    "Use somente em sistemas que você possui ou para os quais possui autorização."
+)
 
-Use somente sistemas próprios ou sistemas para os quais você tenha
-autorização explícita para realizar testes.
-"""
+target = st.text_input(
+    "Alvo",
+    placeholder="https://exemplo.com",
+)
+
+scan_button = st.button(
+    "🔎 Iniciar análise",
+    type="primary",
 )
 
 
-# ============================================================
-# STATUS
-# ============================================================
+if scan_button:
 
-st.subheader("⚙️ Status do BlueScan")
+    if not target.strip():
+        st.warning("Informe uma URL válida.")
+        st.stop()
 
-try:
-    from scanner import scan_target as _scanner_check
+    target = target.strip()
 
-    if callable(_scanner_check):
-        st.success("Scanner carregado corretamente.")
-    else:
-        st.error("Falha ao carregar o scanner.")
+    st.write("### 🔍 Analisando")
+    st.code(target)
 
-except Exception as exc:
-    st.error("Falha ao carregar o scanner.")
-    st.code(repr(exc))
+    try:
+        with st.spinner("Executando análise..."):
+            result = scan_target(target)
 
+        st.success("Análise concluída.")
 
-try:
-    from target_policy import validate_target as _policy_check
+        if isinstance(result, dict):
 
-    if callable(_policy_check):
-        st.success("target_policy carregado corretamente.")
-    else:
-        st.error("Falha ao carregar target_policy.")
+            summary = result.get("summary")
 
-except Exception as exc:
-    st.error("Falha ao carregar target_policy.")
-    st.code(repr(exc))
+            if summary:
+                st.subheader("📊 Resumo")
+                st.write(summary)
+
+            findings = result.get("findings", [])
+
+            if findings:
+                st.subheader(f"🚨 Achados ({len(findings)})")
+
+                for index, finding in enumerate(findings, start=1):
+
+                    if isinstance(finding, dict):
+
+                        title = (
+                            finding.get("title")
+                            or finding.get("name")
+                            or f"Achado {index}"
+                        )
+
+                        with st.expander(
+                            f"{index}. {title}",
+                            expanded=False,
+                        ):
+                            st.json(finding)
+
+                    else:
+                        with st.expander(
+                            f"{index}. Achado",
+                            expanded=False,
+                        ):
+                            st.write(finding)
+
+            else:
+                st.success(
+                    "Nenhum achado relevante foi identificado pela análise."
+                )
+
+            with st.expander("📄 Resultado técnico completo"):
+                st.json(result)
+
+        else:
+            with st.expander("📄 Resultado"):
+                st.write(result)
+
+    except Exception as error:
+        st.error("Ocorreu um erro durante a análise.")
+
+        with st.expander("🔧 Detalhes técnicos"):
+            st.exception(error)
 
 
 st.divider()
 
-
-# ============================================================
-# ALVO
-# ============================================================
-
-st.subheader("🎯 Alvo autorizado")
-
 st.caption(
-    "Use somente sistemas próprios ou sistemas para os quais "
-    "você tenha autorização explícita para realizar testes."
+    "BlueScan • análise defensiva • uso autorizado"
 )
-
-target = st.text_input(
-    "Informe a URL do alvo",
-    placeholder="https://example.com",
-    help="Somente sistemas próprios ou explicitamente autorizados.",
-)
-
-
-# ============================================================
-# EXECUÇÃO
-# ============================================================
-
-if st.button("🔎 Executar análise", type="primary"):
-
-    if not target.strip():
-        st.warning("Informe uma URL antes de executar a análise.")
-        st.stop()
-
-    valid, message = validate_target(target)
-
-    if not valid:
-        st.error(message)
-        st.stop()
-
-    st.info("BlueScan executando a análise defensiva...")
-
-    try:
-        result = scan_target(target)
-
-        st.success("Análise concluída.")
-
-        st.subheader("📊 Resultado")
-
-        if isinstance(result, dict):
-
-            # =================================================
-            # INFORMAÇÕES DA ANÁLISE
-            # =================================================
-
-            col1, col2, col3 = st.columns(3)
-
-            col1.metric(
-                "Status HTTP",
-                result.get("status_code", "N/A"),
-            )
-
-            col2.metric(
-                "Duração",
-                f"{result.get('duration_seconds', 0)} s",
-            )
-
-            col3.metric(
-                "Findings",
-                result.get("summary", {}).get("total", 0),
-            )
-
-            st.divider()
-
-            # =================================================
-            # RESUMO POR SEVERIDADE
-            # =================================================
-
-            summary = result.get("summary")
-
-            if isinstance(summary, dict):
-
-                st.markdown("### 📈 Resumo por severidade")
-
-                cols = st.columns(6)
-
-                cols[0].metric(
-                    "Total",
-                    summary.get("total", 0),
-                )
-
-                cols[1].metric(
-                    "Crítico",
-                    summary.get("critical", 0),
-                )
-
-                cols[2].metric(
-                    "Alto",
-                    summary.get("high", 0),
-                )
-
-                cols[3].metric(
-                    "Médio",
-                    summary.get("medium", 0),
-                )
-
-                cols[4].metric(
-                    "Baixo",
-                    summary.get("low", 0),
-                )
-
-                cols[5].metric(
-                    "Info",
-                    summary.get("info", 0),
-                )
-
-            # =================================================
-            # ACHADOS
-            # =================================================
-
-            findings = result.get("findings")
-
-            if isinstance(findings, list) and findings:
-
-                st.markdown("### 🔍 Achados")
-
-                for index, finding in enumerate(
-                    findings,
-                    start=1,
-                ):
-
-                    if not isinstance(finding, dict):
-                        st.write(finding)
-                        continue
-
-                    title = finding.get(
-                        "title",
-                        f"Achado {index}",
-                    )
-
-                    severity = str(
-                        finding.get(
-                            "severity",
-                            "info",
-                        )
-                    ).upper()
-
-                    category = finding.get(
-                        "category",
-                        "N/A",
-                    )
-
-                    source = finding.get(
-                        "source",
-                        "N/A",
-                    )
-
-                    evidence = finding.get(
-                        "evidence",
-                        "",
-                    )
-
-                    impact = finding.get(
-                        "impact",
-                        "",
-                    )
-
-                    recommendation = finding.get(
-                        "recommendation",
-                        "",
-                    )
-
-                    with st.expander(
-                        f"{index}. [{severity}] {title}"
-                    ):
-
-                        st.markdown(
-                            f"**Severidade:** {severity}"
-                        )
-
-                        st.markdown(
-                            f"**Categoria:** {category}"
-                        )
-
-                        st.markdown(
-                            f"**Fonte:** {source}"
-                        )
-
-                        if evidence:
-                            st.markdown("**Evidência**")
-                            st.code(
-                                str(evidence),
-                                language="text",
-                            )
-
-                        if impact:
-                            st.markdown(
-                                f"**Impacto:** {impact}"
-                            )
-
-                        if recommendation:
-                            st.markdown(
-                                f"**Recomendação:** "
-                                f"{recommendation}"
-                            )
-
-            else:
-                st.info(
-                    "Nenhum finding foi registrado."
-                )
-
-            # =================================================
-            # DADOS TÉCNICOS
-            # =================================================
-
-            with st.expander(
-                "📄 Resultado técnico completo"
-            ):
-                st.json(result)
-
-        else:
-            with st.expander(
-                "📄 Resultado"
-            ):
-                st.write(result)
-
-    except Exception as exc:
-
-        st.error(
-            "Falha durante a execução do scanner."
-        )
-
-        st.code(
-            repr(exc)
-        )
 PY
+
+echo "===== VALIDANDO APP ====="
+python3 -m py_compile app.py
+
+echo
+echo "===== PRIMEIRAS LINHAS ====="
+head -n 12 app.py
+
+echo
+echo "===== INICIANDO STREAMLIT ====="
+streamlit run app.py
