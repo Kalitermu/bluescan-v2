@@ -3,12 +3,20 @@ import time
 from scanner import scan_target
 
 
+# ============================================================
+# CONFIGURAÇÃO
+# ============================================================
+
 st.set_page_config(
     page_title="BlueScan",
     page_icon="🛡️",
     layout="wide",
 )
 
+
+# ============================================================
+# CABEÇALHO
+# ============================================================
 
 st.title("🛡️ BlueScan")
 
@@ -21,149 +29,327 @@ st.info(
 )
 
 
+# ============================================================
+# CAMPO DO ALVO
+# ============================================================
+
 target = st.text_input(
     "Alvo",
     placeholder="https://exemplo.com",
+    help="Informe uma URL HTTP ou HTTPS do sistema autorizado.",
 )
 
 
-if st.button("🔎 Iniciar análise", type="primary"):
+# ============================================================
+# BOTÃO DE SCAN
+# ============================================================
+
+scan_button = st.button(
+    "🔎 Iniciar escaneamento",
+    type="primary",
+    use_container_width=True,
+)
+
+
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
+
+def format_value(value):
+    """
+    Converte valores do resultado para uma representação segura
+    para exibição no Streamlit.
+    """
+
+    if value is None:
+        return "Não informado"
+
+    if isinstance(value, bool):
+        return "Sim" if value else "Não"
+
+    if isinstance(value, (dict, list)):
+        return value
+
+    return str(value)
+
+
+def show_dict(data, title=None):
+    """
+    Exibe um dicionário de forma organizada.
+    """
+
+    if title:
+        st.subheader(title)
+
+    if not isinstance(data, dict):
+        st.write(format_value(data))
+        return
+
+    if not data:
+        st.info("Nenhum dado disponível.")
+        return
+
+    for key, value in data.items():
+
+        label = str(key).replace("_", " ").title()
+
+        if isinstance(value, dict):
+            with st.expander(f"📂 {label}"):
+                show_dict(value)
+
+        elif isinstance(value, list):
+
+            with st.expander(f"📋 {label}"):
+
+                if not value:
+                    st.info("Nenhum item encontrado.")
+                    continue
+
+                for item in value:
+
+                    if isinstance(item, dict):
+                        st.json(item)
+
+                    else:
+                        st.write(f"• {item}")
+
+        else:
+
+            st.write(
+                f"**{label}:** {format_value(value)}"
+            )
+
+
+# ============================================================
+# EXECUÇÃO DO SCAN
+# ============================================================
+
+if scan_button:
+
+    if not target.strip():
+
+        st.warning(
+            "Informe um alvo antes de iniciar o escaneamento."
+        )
+        st.stop()
 
     target = target.strip()
 
-    if not target:
-        st.warning("Informe uma URL válida.")
+    # --------------------------------------------------------
+    # VALIDAÇÃO BÁSICA
+    # --------------------------------------------------------
+
+    if not (
+        target.startswith("http://")
+        or target.startswith("https://")
+    ):
+
+        st.error(
+            "O alvo deve começar com http:// ou https://."
+        )
         st.stop()
 
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    st.divider()
+
+    status_container = st.empty()
+
+    progress_bar = st.progress(
+        0,
+        text="Preparando escaneamento...",
+    )
+
     try:
-        with st.spinner(
-            "Executando HTTP, Headers, TLS, DNS, Technology, "
-            "WhatWeb, Wapiti, subfinder e dnsx..."
+
+        status_container.info(
+            f"🎯 Alvo selecionado: {target}"
+        )
+
+        progress_bar.progress(
+            10,
+            text="Validando alvo...",
+        )
+
+        time.sleep(0.2)
+
+        status_container.info(
+            "🔎 Executando módulos do BlueScan..."
+        )
+
+        progress_bar.progress(
+            30,
+            text="Executando scanner...",
+        )
+
+        # ----------------------------------------------------
+        # SCANNER PRINCIPAL
+        # ----------------------------------------------------
+
+        start_time = time.time()
+
+        result = scan_target(target)
+
+        elapsed = time.time() - start_time
+
+        progress_bar.progress(
+            80,
+            text="Processando resultados...",
+        )
+
+        time.sleep(0.2)
+
+        progress_bar.progress(
+            100,
+            text="Escaneamento concluído.",
+        )
+
+        status_container.success(
+            f"✅ Escaneamento concluído em {elapsed:.2f} segundos."
+        )
+
+    except Exception as exc:
+
+        progress_bar.empty()
+
+        status_container.error(
+            "❌ Ocorreu um erro durante o escaneamento."
+        )
+
+        st.exception(exc)
+
+        st.stop()
+
+
+    # ========================================================
+    # RESULTADO
+    # ========================================================
+
+    st.divider()
+
+    st.header("📊 Resultado do escaneamento")
+
+    if result is None:
+
+        st.warning(
+            "O scanner não retornou resultados."
+        )
+
+        st.stop()
+
+
+    # ========================================================
+    # RESULTADO NÃO-DICT
+    # ========================================================
+
+    if not isinstance(result, dict):
+
+        st.write(result)
+
+        st.stop()
+
+
+    # ========================================================
+    # RESUMO
+    # ========================================================
+
+    st.subheader("🧾 Resumo")
+
+    summary = result.get(
+        "summary",
+        {},
+    )
+
+    if isinstance(summary, dict):
+
+        summary_cols = st.columns(4)
+
+        summary_items = list(
+            summary.items()
+        )
+
+        for index, (key, value) in enumerate(
+            summary_items[:4]
         ):
-            result = scan_target(target)
 
-        st.success("Análise concluída.")
+            col = summary_cols[
+                index % len(summary_cols)
+            ]
 
-        if not isinstance(result, dict):
-            st.error("O scanner retornou um formato inesperado.")
-            st.write(result)
-            st.stop()
+            label = (
+                str(key)
+                .replace("_", " ")
+                .title()
+            )
 
-        # =========================================================
-        # RESUMO
-        # =========================================================
+            col.metric(
+                label,
+                format_value(value),
+            )
 
-        summary = result.get("summary", {})
-        counts = summary.get("counts", {})
-
-        st.subheader("📊 Resumo da análise")
-
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-        col1.metric(
-            "Total",
-            summary.get("total", 0),
-        )
-
-        col2.metric(
-            "Critical",
-            counts.get("CRITICAL", 0),
-        )
-
-        col3.metric(
-            "High",
-            counts.get("HIGH", 0),
-        )
-
-        col4.metric(
-            "Medium",
-            counts.get("MEDIUM", 0),
-        )
-
-        col5.metric(
-            "Low",
-            counts.get("LOW", 0),
-        )
-
-        col6.metric(
-            "Info",
-            counts.get("INFO", 0),
-        )
-
-        # =========================================================
-        # STATUS DOS MÓDULOS
-        # =========================================================
-
-        st.subheader("🧩 Status dos módulos")
-
-        tool_status = result.get("tool_status", {})
-
-        if tool_status:
-
-            for name, info in tool_status.items():
-
-                status = info.get("status", "unknown")
-                error = info.get("error")
-
-                if status == "completed":
-                    st.success(f"✅ {name}: concluído")
-
-                elif status == "not_applicable":
-                    st.info(f"ℹ️ {name}: não aplicável")
-
-                elif status == "not_run":
-                    st.warning(f"⚠️ {name}: não executado")
-
-                elif status == "timeout":
-                    st.warning(f"⏱️ {name}: tempo limite atingido")
-
-                else:
-                    if error:
-                        st.error(
-                            f"❌ {name}: {status} — {error}"
-                        )
-                    else:
-                        st.error(
-                            f"❌ {name}: {status}"
-                        )
-
-        # =========================================================
-        # DADOS PRINCIPAIS
-        # =========================================================
-
-        st.subheader("🎯 Alvo analisado")
+    else:
 
         st.write(
-            f"**URL:** {result.get('target', target)}"
+            format_value(summary)
         )
 
-        st.write(
-            f"**URL final:** {result.get('final_url', '-')}"
+
+    # ========================================================
+    # CLASSIFICAÇÃO
+    # ========================================================
+
+    severity = result.get(
+        "severity",
+        result.get(
+            "risk",
+            result.get(
+                "classification",
+                None,
+            ),
+        ),
+    )
+
+    if severity is not None:
+
+        st.subheader("🚦 Classificação")
+
+        st.metric(
+            "Nível",
+            format_value(severity),
         )
 
-        st.write(
-            f"**HTTP:** {result.get('status_code', '-')}"
+
+    # ========================================================
+    # ACHADOS
+    # ========================================================
+
+    findings = result.get(
+        "findings",
+        result.get(
+            "vulnerabilities",
+            result.get(
+                "issues",
+                [],
+            ),
+        ),
+    )
+
+    st.subheader("🔍 Achados de segurança")
+
+    if findings is None:
+
+        st.info(
+            "Nenhum dado de achados foi retornado."
         )
 
-        st.write(
-            f"**Duração:** "
-            f"{result.get('duration_seconds', '-')} segundos"
-        )
+    elif isinstance(findings, list):
 
-        # =========================================================
-        # ACHADOS
-        # =========================================================
-
-        findings = result.get("findings", [])
-
-        st.subheader(
-            f"🔎 Achados consolidados ({len(findings)})"
-        )
-
-        if not findings:
+        if len(findings) == 0:
 
             st.success(
-                "Nenhum achado foi retornado pelos módulos executados."
+                "Nenhum achado registrado pelo scanner."
             )
 
         else:
@@ -173,215 +359,459 @@ if st.button("🔎 Iniciar análise", type="primary"):
                 start=1,
             ):
 
-                if not isinstance(finding, dict):
+                if isinstance(finding, dict):
+
+                    title = finding.get(
+                        "title",
+                        finding.get(
+                            "name",
+                            f"Achado {index}",
+                        ),
+                    )
+
+                    category = finding.get(
+                        "category",
+                        finding.get(
+                            "type",
+                            "Não informado",
+                        ),
+                    )
+
+                    severity_finding = finding.get(
+                        "severity",
+                        finding.get(
+                            "risk",
+                            "Não informado",
+                        ),
+                    )
+
+                    with st.expander(
+                        f"🔎 {title}"
+                    ):
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+
+                            st.write(
+                                "**Categoria:**",
+                                format_value(category),
+                            )
+
+                        with col2:
+
+                            st.write(
+                                "**Severidade:**",
+                                format_value(
+                                    severity_finding
+                                ),
+                            )
+
+                        if "source" in finding:
+
+                            st.write(
+                                "**Fonte:**",
+                                format_value(
+                                    finding.get(
+                                        "source"
+                                    )
+                                ),
+                            )
+
+                        if "evidence" in finding:
+
+                            st.write(
+                                "**Evidência:**"
+                            )
+
+                            st.code(
+                                format_value(
+                                    finding.get(
+                                        "evidence"
+                                    )
+                                )
+                            )
+
+                        if "impact" in finding:
+
+                            st.write(
+                                "**Impacto:**",
+                                format_value(
+                                    finding.get(
+                                        "impact"
+                                    )
+                                ),
+                            )
+
+                        if "consequence" in finding:
+
+                            st.write(
+                                "**Consequência:**",
+                                format_value(
+                                    finding.get(
+                                        "consequence"
+                                    )
+                                ),
+                            )
+
+                        if "recommendation" in finding:
+
+                            st.write(
+                                "**Recomendação:**",
+                                format_value(
+                                    finding.get(
+                                        "recommendation"
+                                    )
+                                ),
+                            )
+
+                        # Campos adicionais
+                        extra_fields = {
+                            key: value
+                            for key, value in finding.items()
+                            if key not in {
+                                "title",
+                                "name",
+                                "category",
+                                "type",
+                                "severity",
+                                "risk",
+                                "source",
+                                "evidence",
+                                "impact",
+                                "consequence",
+                                "recommendation",
+                            }
+                        }
+
+                        if extra_fields:
+
+                            with st.expander(
+                                "📎 Dados adicionais"
+                            ):
+
+                                st.json(
+                                    extra_fields
+                                )
+
+                else:
+
                     st.write(
                         f"{index}. {finding}"
                     )
-                    continue
 
-                severity = str(
-                    finding.get("severity", "INFO")
-                ).upper()
+    elif isinstance(findings, dict):
 
-                title = (
-                    finding.get("title")
-                    or "Achado sem título"
-                )
+        show_dict(
+            findings
+        )
 
-                source = (
-                    finding.get("source")
-                    or "BlueScan"
-                )
+    else:
 
-                category = (
-                    finding.get("category")
-                    or "Security"
-                )
+        st.write(
+            format_value(findings)
+        )
 
-                label = (
-                    f"{index}. "
-                    f"[{severity}] "
-                    f"{title}"
-                )
 
-                with st.expander(label):
+    # ========================================================
+    # DADOS TÉCNICOS
+    # ========================================================
 
-                    st.write(
-                        f"**Categoria:** {category}"
-                    )
+    st.divider()
 
-                    st.write(
-                        f"**Fonte:** {source}"
-                    )
+    st.subheader("🛠️ Dados técnicos")
 
-                    st.write("**Evidência**")
+    technical = result.get(
+        "technical",
+        {},
+    )
 
-                    st.code(
-                        str(
-                            finding.get(
-                                "evidence",
-                                "",
-                            )
-                        )
-                    )
+    if isinstance(technical, dict):
 
-                    st.write("**Impacto**")
+        dns = technical.get(
+            "dns"
+        )
 
-                    st.write(
-                        finding.get(
-                            "impact",
-                            "Não informado.",
-                        )
-                    )
+        technologies = technical.get(
+            "technologies"
+        )
 
-                    st.write("**Consequência**")
+        tls = technical.get(
+            "tls"
+        )
 
-                    st.write(
-                        finding.get(
-                            "consequence",
-                            "Não informado.",
-                        )
-                    )
+        http = technical.get(
+            "http"
+        )
 
-                    st.write("**Recomendação**")
+        # ----------------------------------------------------
+        # DNS
+        # ----------------------------------------------------
 
-                    st.write(
-                        finding.get(
-                            "recommendation",
-                            "Não informado.",
-                        )
-                    )
-
-        # =========================================================
-        # DADOS TÉCNICOS
-        # =========================================================
-
-        technical = result.get("technical", {})
-
-        st.subheader("🛠️ Dados técnicos")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            st.write("**DNS**")
-
-            dns = technical.get("dns", [])
+        with st.expander("🌐 DNS"):
 
             if dns:
-                for address in dns:
-                    st.code(str(address))
+
+                if isinstance(dns, dict):
+                    st.json(dns)
+
+                else:
+                    st.write(
+                        format_value(dns)
+                    )
+
             else:
-                st.write("Nenhum endereço retornado.")
 
-        with col2:
-
-            st.write("**Tecnologias**")
-
-            technologies = technical.get(
-                "technologies",
-                [],
-            )
-
-            if technologies:
-                for technology in technologies:
-                    st.code(str(technology))
-            else:
-                st.write(
-                    "Nenhuma tecnologia identificada pelos headers."
+                st.info(
+                    "Nenhuma informação DNS disponível."
                 )
 
-        tls = technical.get("tls", {})
+        # ----------------------------------------------------
+        # TECNOLOGIAS
+        # ----------------------------------------------------
 
-        st.write("**TLS**")
+        with st.expander("⚙️ Tecnologias"):
 
-        if tls:
+            if technologies:
 
-            st.json(tls)
+                if isinstance(
+                    technologies,
+                    dict,
+                ):
+
+                    st.json(
+                        technologies
+                    )
+
+                elif isinstance(
+                    technologies,
+                    list,
+                ):
+
+                    for technology in technologies:
+
+                        st.write(
+                            f"• {technology}"
+                        )
+
+                else:
+
+                    st.write(
+                        format_value(
+                            technologies
+                        )
+                    )
+
+            else:
+
+                st.info(
+                    "Nenhuma tecnologia identificada."
+                )
+
+        # ----------------------------------------------------
+        # TLS
+        # ----------------------------------------------------
+
+        with st.expander("🔐 TLS"):
+
+            if tls:
+
+                if isinstance(tls, dict):
+                    st.json(tls)
+
+                else:
+                    st.write(
+                        format_value(tls)
+                    )
+
+            else:
+
+                st.info(
+                    "Nenhuma informação TLS disponível."
+                )
+
+        # ----------------------------------------------------
+        # HTTP
+        # ----------------------------------------------------
+
+        with st.expander("🌍 HTTP"):
+
+            if http:
+
+                if isinstance(http, dict):
+                    st.json(http)
+
+                else:
+                    st.write(
+                        format_value(http)
+                    )
+
+            else:
+
+                st.info(
+                    "Nenhuma informação HTTP disponível."
+                )
+
+    else:
+
+        st.info(
+            "Nenhum dado técnico disponível."
+        )
+
+
+    # ========================================================
+    # STATUS DOS MÓDULOS
+    # ========================================================
+
+    st.divider()
+
+    st.subheader("🧩 Status dos módulos")
+
+    modules = result.get(
+        "modules",
+        result.get(
+            "module_status",
+            result.get(
+                "status",
+                {},
+            ),
+        ),
+    )
+
+    if isinstance(modules, dict):
+
+        module_items = list(
+            modules.items()
+        )
+
+        if module_items:
+
+            module_cols = st.columns(
+                min(
+                    len(module_items),
+                    4,
+                )
+            )
+
+            for index, (name, status) in enumerate(
+                module_items
+            ):
+
+                col = module_cols[
+                    index % len(module_cols)
+                ]
+
+                if isinstance(status, dict):
+
+                    module_status = status.get(
+                        "status",
+                        status.get(
+                            "state",
+                            "available",
+                        ),
+                    )
+
+                    col.metric(
+                        str(name),
+                        str(module_status),
+                    )
+
+                else:
+
+                    col.metric(
+                        str(name),
+                        str(status),
+                    )
 
         else:
 
-            st.write(
-                "Nenhuma informação TLS disponível."
+            st.info(
+                "Nenhum status de módulo disponível."
             )
 
-        # =========================================================
-        # RESULTADOS POR MÓDULO
-        # =========================================================
+    else:
 
-        modules = result.get("modules", {})
-
-        if modules:
-
-            with st.expander(
-                "📦 Resultados detalhados por módulo"
-            ):
-
-                for module_name, module_data in modules.items():
-
-                    st.write(
-                        f"### {module_name}"
-                    )
-
-                    if isinstance(
-                        module_data,
-                        dict,
-                    ):
-
-                        st.write(
-                            f"Status: "
-                            f"`{module_data.get('status', 'unknown')}`"
-                        )
-
-                        module_error = module_data.get(
-                            "error"
-                        )
-
-                        if module_error:
-                            st.error(
-                                str(module_error)
-                            )
-
-                        module_findings = module_data.get(
-                            "findings",
-                            [],
-                        )
-
-                        if module_findings:
-                            st.write(
-                                f"Achados do módulo: "
-                                f"{len(module_findings)}"
-                            )
-
-                    else:
-
-                        st.write(module_data)
-
-        # =========================================================
-        # JSON COMPLETO
-        # =========================================================
-
-        with st.expander(
-            "📄 Resultado técnico completo"
-        ):
-
-            st.json(result)
-
-    except Exception as error:
-
-        st.error(
-            "Ocorreu um erro durante a análise."
+        st.info(
+            "Nenhum status de módulo disponível."
         )
 
+
+    # ========================================================
+    # OUTROS DADOS
+    # ========================================================
+
+    known_sections = {
+        "summary",
+        "severity",
+        "risk",
+        "classification",
+        "findings",
+        "vulnerabilities",
+        "issues",
+        "technical",
+        "modules",
+        "module_status",
+        "status",
+    }
+
+    extra_result = {
+        key: value
+        for key, value in result.items()
+        if key not in known_sections
+    }
+
+    if extra_result:
+
+        st.divider()
+
         with st.expander(
-            "🔧 Detalhes técnicos"
+            "📦 Outros dados retornados pelo scanner"
         ):
 
-            st.exception(error)
+            st.json(
+                extra_result
+            )
 
 
-st.divider()
+    # ========================================================
+    # RESULTADO BRUTO
+    # ========================================================
 
-st.caption(
-    "BlueScan • análise defensiva • uso autorizado"
-)
+    st.divider()
+
+    with st.expander(
+        "🧪 Resultado bruto do scanner"
+    ):
+
+        st.json(
+            result
+        )
+
+Como colocar no seu BlueScan
+
+No Kali, dentro do projeto:
+
+cd ~/bluescan-v2
+source .venv/bin/activate
+
+Faça backup do atual:
+
+cp app.py app.py.bak
+
+Depois substitua o conteúdo do "app.py" pelo código acima.
+
+Em seguida, valide antes de abrir o Streamlit:
+
+python3 -m py_compile app.py
+
+Se não aparecer nenhuma mensagem, rode:
+
+streamlit run app.py
+
+Esse "app.py" foi feito para ser tolerante ao formato do retorno do scanner: ele procura "summary", "findings", "technical", "modules", "severity" etc., mas também aceita algumas variações como "vulnerabilities", "issues", "risk" e "module_status".
+
+Importante: ele não altera "scanner.py", "scanner_checks.py", "correlator.py" ou os demais módulos. O ponto de integração continua sendo:
+
+result = scan_target(target)
+
+Assim, o próximo diagnóstico fica bem mais fácil: se "py_compile" passar mas algum resultado aparecer errado, sabemos que o problema está no formato retornado pelo "scanner.py", e não na sintaxe do "app.py".
